@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go mod:*)",
+      "Bash(go build:*)",
+      "Bash(./lyra.exe --help)",
+      "Bash(./lyra.exe cp:*)",
+      "Bash(./lyra.exe ls:*)",
+      "Bash(./lyra.exe touch:*)",
+      "Bash(./lyra.exe info:*)",
+      "Bash(./lyra.exe md:*)",
+      "Read(//c/Users/Ahri/.lyra/**)",
+      "Bash(./lyra.exe find:*)",
+      "Bash(./lyra.exe rename:*)",
+      "Bash(./lyra.exe auth:*)",
+      "Bash(./lyra.exe resume:*)",
+      "Bash(./lyra.exe rm:*)",
+      "Bash(wc -l /c/Users/Ahri/Projects/better-copy/**/*.go /c/Users/Ahri/Projects/better-copy/*.go)",
+      "Bash(go run:*)"
+    ]
+  }
+}
