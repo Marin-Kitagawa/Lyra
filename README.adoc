@@ -1,0 +1,1131 @@
+= lyra — File Management Reimagined
+:doctype: book
+:toc: left
+:toclevels: 3
+:toc-title: Contents
+:sectanchors:
+:sectlinks:
+:icons: font
+:source-highlighter: highlight.js
+:experimental:
+:imagesdir: images
+:version: 1.0.0
+:go-version: 1.22+
+
+[.lead]
+*lyra* is a modern, beautiful CLI file management tool written in Go.
+It replaces `cp`, `mkdir`, `rm`, and more with a single unified command that supports
+cloud storage, SSH/FTP transfers, resumable copies, and a gorgeous pink/purple progress UI.
+
+---
+
+== Installation
+
+=== Build from Source
+
+.Prerequisites
+* Go {go-version}
+
+[source,bash]
+----
+git clone https://github.com/lyra-cli/lyra
+cd lyra
+go build -ldflags="-s -w" -o lyra .
+----
+
+Move the binary somewhere on your `$PATH`:
+
+[source,bash]
+----
+# Linux / macOS
+mv lyra /usr/local/bin/
+
+# Windows — copy to a directory in %PATH%
+copy lyra.exe C:\Windows\System32\
+----
+
+=== Shell Integration (recommended)
+
+Add to your `~/.bashrc`, `~/.zshrc`, or `~/.profile`:
+
+[source,bash]
+----
+# lmd — mkdir that also cds into the new directory
+lmd() {
+  lyra md "$@" && [ -f ~/.lyra/.cdto ] && cd "$(cat ~/.lyra/.cdto)" && rm ~/.lyra/.cdto
+}
+----
+
+After sourcing your shell config, use `lmd` anywhere you'd use `mkdir && cd`.
+
+---
+
+== Quick Reference
+
+[cols="1,2,3", options="header"]
+|===
+| Command | Replaces | One-liner
+
+| `lyra cp`
+| `cp`, `rsync`, `scp`, `ftp`
+| Copy anything — local, SSH, FTP, or cloud, with resume support
+
+| `lyra md`
+| `mkdir -p`
+| Create directories; `--cd` auto-cds via shell helper
+
+| `lyra rm`
+| `rm`
+| Send to trash by default; `--permanent` for real deletion
+
+| `lyra mv`
+| `mv`
+| Move / rename with a live progress bar
+
+| `lyra ls`
+| `ls`
+| Colorized listing with icons, tree view, and sorting
+
+| `lyra find`
+| `find`
+| Find files by name, size, or age
+
+| `lyra sync`
+| `rsync`
+| Sync two directories with checksum detection
+
+| `lyra touch`
+| `touch`
+| Create files or update timestamps
+
+| `lyra info`
+| `stat`, `md5sum`
+| Detailed file info: size, checksums, MIME type
+
+| `lyra rename`
+| —
+| Batch rename with glob patterns
+
+| `lyra auth`
+| —
+| Authenticate with Google Drive, Dropbox, OneDrive
+|===
+
+---
+
+== Commands
+
+=== `lyra cp` — Copy
+
+[source]
+----
+lyra cp <source> <destination> [flags]
+----
+
+Copies files and directories with a live progress bar. Supports local paths,
+SSH/SFTP, FTP, and three cloud providers out of the box. Interrupted transfers
+can always be resumed from the exact byte offset.
+
+==== Source / Destination Syntax
+
+[cols="1,2", options="header"]
+|===
+| Format | Protocol
+
+| `/path/to/file`
+| Local filesystem
+
+| `user@host:/path`
+| SSH / SFTP (key auth by default)
+
+| `sftp://user@host:22/path`
+| SFTP with explicit port
+
+| `ftp://user:pass@host/path`
+| FTP
+
+| `gdrive://MyDrive/folder/file`
+| Google Drive (see <<auth,`lyra auth`>>)
+
+| `dropbox://folder/file`
+| Dropbox (see <<auth,`lyra auth`>>)
+
+| `onedrive://folder/file`
+| OneDrive (see <<auth,`lyra auth`>>)
+|===
+
+==== Flags
+
+[cols="1,1,3", options="header"]
+|===
+| Flag | Default | Description
+
+| `-r`, `--recursive`
+| false
+| Copy directories recursively
+
+| `--resume`
+| false
+| Resume a previously interrupted transfer
+
+| `--sync`
+| false
+| Skip files that are already identical (like rsync)
+
+| `--checksum`
+| false
+| Verify SHA-256 checksum after copy completes
+
+| `--preserve`
+| true
+| Preserve timestamps and file permissions
+
+| `--keep-partial`
+| false
+| Keep the partial destination file on error
+
+| `--key`
+| `~/.ssh/id_rsa`
+| Path to SSH private key file
+
+| `--password`
+| —
+| SSH password (used only when key auth is unavailable)
+|===
+
+==== Examples
+
+[source,bash]
+----
+# Basic local copy
+lyra cp report.pdf /backups/
+
+# Recursive directory copy with checksum verification
+lyra cp -r projects/ /backups/projects/ --checksum
+
+# Copy to a remote server via SFTP
+lyra cp database.sql admin@db.example.com:/var/backups/
+
+# Copy from FTP server
+lyra cp ftp://ftp.example.com/pub/data.tar.gz ./
+
+# Upload to Google Drive
+lyra cp vacation-photos/ gdrive://MyDrive/Photos/ -r
+
+# Download from Dropbox
+lyra cp dropbox://Work/presentation.pptx ./
+
+# Resume an interrupted transfer
+lyra cp --resume large-video.mkv /nas/media/
+
+# rsync-style: only copy files that differ
+lyra cp --sync /source/dir/ /dest/dir/ -r
+----
+
+==== Resume Behaviour
+
+When you press kbd:[Ctrl+C] during a transfer, lyra:
+
+1. Catches the interrupt signal and freezes the progress bar in place.
+2. Saves the transfer state to `~/.lyra/resume/<hash>.json`.
+3. Prints a hint: `Paused. Resume with: lyra cp --resume <src> <dest>`
+
+On the next run with `--resume`, lyra opens the destination file in append
+mode, seeks to the saved byte offset, and continues the transfer seamlessly.
+State files are cleaned up automatically once the transfer succeeds.
+
+.List all paused transfers
+[source,bash]
+----
+lyra resume
+----
+
+---
+
+=== `lyra md` — Make Directory
+
+[source]
+----
+lyra md <path> [flags]
+----
+
+Creates a directory and all missing parents (equivalent to `mkdir -p`).
+
+==== Flags
+
+[cols="1,1,3", options="header"]
+|===
+| Flag | Default | Description
+
+| `--cd`
+| false
+| Write the created path to `~/.lyra/.cdto` so the shell helper can cd into it
+|===
+
+==== Examples
+
+[source,bash]
+----
+# Create a directory tree
+lyra md /tmp/project/src/handlers
+
+# Create and cd into the new directory (requires shell helper — see below)
+lmd my-new-project/src
+----
+
+==== Shell Helper
+
+The `--cd` flag alone cannot change your shell's current directory because
+lyra is a child process. Use the `lmd` shell function instead:
+
+[source,bash]
+----
+# Add to ~/.bashrc or ~/.zshrc
+lmd() {
+  lyra md "$@" && [ -f ~/.lyra/.cdto ] && cd "$(cat ~/.lyra/.cdto)" && rm ~/.lyra/.cdto
+}
+----
+
+`lmd` behaves identically to `lyra md` but automatically cds into the
+directory that was just created.
+
+---
+
+=== `lyra rm` — Remove
+
+[source]
+----
+lyra rm <path>... [flags]
+----
+
+Removes files or directories. By default, items are moved to the system trash
+(Recycle Bin on Windows, `~/.Trash` on macOS, freedesktop Trash on Linux).
+Use `--permanent` to bypass the trash for immediate deletion.
+
+==== Flags
+
+[cols="1,1,3", options="header"]
+|===
+| Flag | Default | Description
+
+| `-r`, `--recursive`
+| false
+| Remove directories and their contents
+
+| `--permanent`
+| false
+| Delete permanently, bypassing the trash
+
+| `-f`, `--force`
+| false
+| Ignore non-existent files; never prompt
+
+| `--list-trash`
+| false
+| Show the contents of the system trash
+
+| `--restore`
+| —
+| Restore a named file from the trash
+|===
+
+==== Examples
+
+[source,bash]
+----
+# Send to trash (safe — recoverable)
+lyra rm old-report.docx
+
+# Remove a directory tree (still goes to trash)
+lyra rm -r tmp-build/
+
+# Permanent deletion — cannot be undone
+lyra rm --permanent temp.log
+
+# List what is in the trash
+lyra rm --list-trash
+
+# Restore a file from the trash
+lyra rm --restore old-report.docx
+----
+
+NOTE: On Windows the trash integration uses PowerShell's
+`Microsoft.VisualBasic.FileIO.FileSystem` API, which is the same path the
+Explorer UI uses — the file appears in the Recycle Bin and its original
+path is preserved for restoration.
+
+---
+
+=== `lyra mv` — Move / Rename
+
+[source]
+----
+lyra mv <source> <destination> [flags]
+----
+
+Moves or renames files and directories with a live progress bar.
+For same-filesystem moves this is an atomic rename; cross-filesystem moves
+copy then delete the source.
+
+==== Examples
+
+[source,bash]
+----
+# Rename a file
+lyra mv old-name.txt new-name.txt
+
+# Move to another directory
+lyra mv report.pdf /archive/2024/
+
+# Move an entire directory
+lyra mv build/ /var/www/html/
+----
+
+---
+
+=== `lyra ls` — Directory Listing
+
+[source]
+----
+lyra ls [path] [flags]
+----
+
+Lists directory contents with color-coded entries, file-type icons, and
+human-readable sizes. All column widths are calculated from *visible* terminal
+characters, so emoji icons and ANSI colours never break alignment.
+
+.Column Layout
+[source]
+----
+  Name                            Size         Modified
+  ──────────────────────────────────────────────────────
+📁 my-directory                   —            Mar 29 14:05
+📃 notes.txt                      4.2 kB       Mar 28 09:11
+🐹 main.go                        1.8 kB       Mar 27 22:50
+⚡ lyra.exe                        18 MB        Mar 29 23:36
+----
+
+==== Flags
+
+[cols="1,1,3", options="header"]
+|===
+| Flag | Default | Description
+
+| `-a`, `--all`
+| false
+| Show hidden files (names starting with `.`)
+
+| `--tree`
+| false
+| Display as an indented tree
+
+| `--sort`
+| `name`
+| Sort order: `name`, `size`, `time`, or `type`
+|===
+
+==== File Icons
+
+[cols="1,2", options="header"]
+|===
+| Icon | File Type
+
+| 📁 | Directory
+| 🔗 | Symbolic link
+| 🐹 | Go source (`.go`)
+| 📜 | JavaScript / TypeScript
+| 🐍 | Python
+| 🦀 | Rust
+| 💎 | Ruby
+| ☕ | Java
+| ⚙️ | C / C++
+| 🐚 | Shell scripts
+| 📝 | Markdown
+| 🔧 | Config (JSON/YAML/TOML)
+| 🌐 | HTML
+| 🎨 | CSS / SCSS
+| 🖼️ | Images
+| 🎵 | Audio
+| 🎬 | Video
+| 📄 | PDF
+| 📦 | Archives
+| ⚡ | Executables
+| 📃 | Plain text
+| 📊 | CSV
+| 📋 | Log files
+| 🗄️ | Databases
+| 🔒 | Lock files
+| 🔐 | `.env` files
+|===
+
+==== Examples
+
+[source,bash]
+----
+# List current directory
+lyra ls
+
+# List another directory
+lyra ls /var/log
+
+# Show hidden files sorted by modification time
+lyra ls --all --sort time
+
+# Tree view
+lyra ls --tree
+
+# Tree view including hidden files
+lyra ls --tree --all ~/Projects
+----
+
+---
+
+=== `lyra find` — Find Files
+
+[source]
+----
+lyra find <path> [flags]
+----
+
+Recursively searches for files matching the given criteria.
+Multiple filters are combined with AND logic.
+
+==== Flags
+
+[cols="1,3", options="header"]
+|===
+| Flag | Description
+
+| `--name <pattern>`
+| Glob pattern to match the filename (e.g., `*.log`, `report_*`)
+
+| `--size <expr>`
+| Size filter: `+1GB` (larger than), `-500KB` (smaller than), `100MB` (exactly)
+
+| `--modified <expr>`
+| Modification time: `last 7 days`, `before 2024-01-01`, `after 2023-06-01`
+
+| `--type f\|d`
+| Limit to files (`f`) or directories (`d`)
+|===
+
+==== Examples
+
+[source,bash]
+----
+# Find all Go source files
+lyra find . --name "*.go"
+
+# Find large files
+lyra find /home --size +1GB
+
+# Find recently modified log files
+lyra find /var/log --name "*.log" --modified "last 7 days"
+
+# Find only directories whose name starts with "test"
+lyra find . --name "test*" --type d
+----
+
+---
+
+=== `lyra sync` — Sync Directories
+
+[source]
+----
+lyra sync <source> <destination> [flags]
+----
+
+Synchronises two directories using checksum-based change detection,
+similar to `rsync --checksum`. Only files that differ are transferred;
+unchanged files are skipped.
+
+==== Flags
+
+[cols="1,1,3", options="header"]
+|===
+| Flag | Default | Description
+
+| `--delete`
+| false
+| Remove files in destination that are not in source
+
+| `--dry-run`
+| false
+| Preview what would be changed without making any changes
+
+| `--checksum`
+| false
+| Use SHA-256 checksums instead of size+mtime for change detection
+|===
+
+==== Examples
+
+[source,bash]
+----
+# One-way sync from source to destination
+lyra sync ~/Documents /backups/Documents
+
+# Mirror exactly (deletes extra files in destination)
+lyra sync ~/Documents /backups/Documents --delete
+
+# Preview sync without writing anything
+lyra sync ~/Documents /backups/Documents --dry-run
+
+# Force checksum comparison for maximum accuracy
+lyra sync --checksum /source /dest
+----
+
+---
+
+=== `lyra touch` — Create / Update Files
+
+[source]
+----
+lyra touch <file>... [flags]
+----
+
+Creates empty files if they do not exist, or updates the modification
+timestamp of existing files — identical to the classic Unix `touch`.
+
+==== Flags
+
+[cols="1,1,3", options="header"]
+|===
+| Flag | Default | Description
+
+| `-t <time>`
+| now
+| Set a specific timestamp in format `YYYYMMDDhhmm`
+
+| `-r <ref-file>`
+| —
+| Use the timestamp of another file
+|===
+
+==== Examples
+
+[source,bash]
+----
+# Create multiple empty files
+lyra touch index.html style.css app.js
+
+# Update timestamp to a specific time
+lyra touch -t 202401151200 snapshot.txt
+
+# Copy timestamp from another file
+lyra touch -r reference.txt target.txt
+----
+
+---
+
+=== `lyra info` — File Information
+
+[source]
+----
+lyra info <file>... [flags]
+----
+
+Displays detailed information about one or more files in a styled box:
+path, type, size (bytes and human-readable), permissions, timestamps,
+MIME type, and MD5 / SHA-1 / SHA-256 checksums.
+
+==== Flags
+
+[cols="1,1,3", options="header"]
+|===
+| Flag | Default | Description
+
+| `--no-checksum`
+| false
+| Skip checksum calculation (faster for large files)
+|===
+
+==== Example Output
+
+[source]
+----
+  📃  notes.txt
+
+╭──────────────────────────────────────────────────────────────────────╮
+│   Path:        /home/user/notes.txt                                  │
+│   Type:        Regular File                                          │
+│   Size:        4.2 kB (4312 bytes)                                   │
+│   Mode:        -rw-r--r--                                            │
+│   Modified:    2026-03-28 09:11:44                                   │
+│   MIME Type:   text/plain; charset=utf-8                             │
+╰──────────────────────────────────────────────────────────────────────╯
+
+Checksums:
+
+╭─────────────────────────────────────────────────────────────────────────────────────────╮
+│   MD5:     d41d8cd98f00b204e9800998ecf8427e                                             │
+│   SHA1:    da39a3ee5e6b4b0d3255bfef95601890afd80709                                     │
+│   SHA256:  e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855             │
+╰─────────────────────────────────────────────────────────────────────────────────────────╯
+----
+
+==== Examples
+
+[source,bash]
+----
+# Info for a single file
+lyra info photo.jpg
+
+# Info for multiple files
+lyra info *.go
+
+# Skip slow checksum step
+lyra info huge-backup.tar.gz --no-checksum
+----
+
+---
+
+=== `lyra rename` — Batch Rename
+
+[source]
+----
+lyra rename <pattern> <replacement> [flags]
+lyra rename [flags] <files...>
+----
+
+Renames multiple files at once using glob patterns, sequential numbering,
+or case conversion.
+
+==== Flags
+
+[cols="1,1,3", options="header"]
+|===
+| Flag | Default | Description
+
+| `--dry-run`
+| false
+| Preview renames without applying them
+
+| `--seq`
+| false
+| Number files sequentially: `001`, `002`, …
+
+| `--case`
+| —
+| Convert filename case: `upper`, `lower`, or `title`
+
+| `--start`
+| 1
+| Starting index for `--seq`
+
+| `--pad`
+| 3
+| Zero-padding width for `--seq` (e.g., `3` → `001`)
+|===
+
+==== Examples
+
+[source,bash]
+----
+# Change all .txt extensions to .bak
+lyra rename "*.txt" "*.bak"
+
+# Rename with prefix
+lyra rename "photo_*.jpg" "holiday_*.jpg"
+
+# Sequential numbering: img_001.jpg, img_002.jpg …
+lyra rename --seq *.jpg
+
+# Sequential with custom start and wider padding
+lyra rename --seq --start 10 --pad 4 *.png
+# → 0010.png, 0011.png …
+
+# Lowercase all filenames
+lyra rename --case lower *.JPG
+
+# Preview without applying
+lyra rename --dry-run "*.jpeg" "*.jpg"
+----
+
+---
+
+[[auth]]
+=== `lyra auth` — Cloud Authentication
+
+[source]
+----
+lyra auth <provider> [flags]
+lyra auth logout <provider>
+lyra auth status
+----
+
+Authenticates with cloud storage providers using OAuth 2.0.
+Tokens are stored in `~/.lyra/tokens/` and refreshed automatically.
+
+==== Supported Providers
+
+[cols="1,2,2", options="header"]
+|===
+| Provider | Command | Token location
+
+| Google Drive
+| `lyra auth gdrive`
+| `~/.lyra/tokens/gdrive.json`
+
+| Dropbox
+| `lyra auth dropbox`
+| `~/.lyra/tokens/dropbox.json`
+
+| OneDrive
+| `lyra auth onedrive`
+| `~/.lyra/tokens/onedrive.json`
+|===
+
+==== OAuth 2.0 Flow
+
+1. Run `lyra auth <provider>`.
+2. lyra opens your default browser at the provider's authorisation page.
+3. Log in and grant the requested permissions.
+4. The browser redirects to `http://localhost:9876/callback`.
+5. lyra captures the authorisation code, exchanges it for a token, and saves
+   it to disk.
+
+[source,bash]
+----
+# Authenticate with Google Drive
+lyra auth gdrive
+
+# Authenticate with Dropbox
+lyra auth dropbox
+
+# Authenticate with Microsoft OneDrive
+lyra auth onedrive
+
+# Check authentication status for all providers
+lyra auth status
+
+# Revoke a provider's token
+lyra auth logout gdrive
+----
+
+NOTE: lyra requires only the minimal scopes needed for upload/download
+operations. It does not request access to your email, contacts, or any
+other data.
+
+After authenticating, use the corresponding scheme in `lyra cp`:
+
+[source,bash]
+----
+lyra cp report.pdf gdrive://MyDrive/Reports/
+lyra cp dropbox://Work/specs.docx ./
+lyra cp assets/ onedrive://Documents/assets/ -r
+----
+
+---
+
+=== `lyra resume` — List Paused Transfers
+
+[source]
+----
+lyra resume
+----
+
+Lists all transfers that were interrupted (via kbd:[Ctrl+C]) and not yet
+completed. Each entry shows the source, destination, progress percentage,
+and the command needed to resume.
+
+[source]
+----
+  Paused transfers
+
+  ┌─ 1 ──────────────────────────────────────────────────────────────────┐
+  │  Source:      /mnt/usb/backup.tar.gz                                 │
+  │  Destination: /home/user/backups/backup.tar.gz                       │
+  │  Progress:    47% (4.7 GB of 10 GB)                                  │
+  │  Paused:      2026-03-29 22:14                                        │
+  │  Resume:      lyra cp --resume /mnt/usb/backup.tar.gz /home/user/... │
+  └──────────────────────────────────────────────────────────────────────┘
+----
+
+---
+
+== Configuration
+
+lyra stores all persistent state under `~/.lyra/`:
+
+[source]
+----
+~/.lyra/
+├── config.json          # Global settings
+├── .cdto                # Temporary file written by lyra md --cd
+├── tokens/
+│   ├── gdrive.json      # Google Drive OAuth token
+│   ├── dropbox.json     # Dropbox OAuth token
+│   └── onedrive.json    # OneDrive OAuth token
+└── resume/
+    └── <sha256>.json    # One file per paused transfer
+----
+
+=== `config.json`
+
+[source,json]
+----
+{
+  "default_copy_buffer":  "32MB",
+  "pipeline_threshold":   "512MB",
+  "goroutine_pool_size":  8,
+  "preserve_timestamps":  true,
+  "cloud_chunk_size":     "8MB"
+}
+----
+
+[cols="1,1,3", options="header"]
+|===
+| Key | Default | Description
+
+| `default_copy_buffer`
+| `32MB`
+| Read/write buffer size for local copies
+
+| `pipeline_threshold`
+| `512MB`
+| Files larger than this use a concurrent pipeline for copying
+
+| `goroutine_pool_size`
+| `8`
+| Maximum concurrent file copies in recursive operations
+
+| `preserve_timestamps`
+| `true`
+| Preserve mtime/atime after copy
+
+| `cloud_chunk_size`
+| `8MB`
+| Upload chunk size for cloud providers
+|===
+
+---
+
+== Progress Bar
+
+lyra uses a rich terminal progress bar for all transfer operations.
+
+[source]
+----
+  backup.tar.gz
+  ███████████████████▓▒░░░░░░░░░░░░░░░░░░  48% │ 4.8 GB / 10 GB │ 312 MB/s │ ETA 17s
+----
+
+* The bar fills with Unicode block characters: `█ ▓ ▒ ░`
+* Speed and ETA are updated every 250 ms.
+* On kbd:[Ctrl+C], the bar freezes in place and the transfer state is saved.
+* Multiple bars are shown in parallel for recursive / sync operations.
+
+---
+
+== SSH & FTP
+
+=== SSH / SFTP
+
+lyra uses Go's `golang.org/x/crypto/ssh` and `github.com/pkg/sftp` packages
+for SSH transfers.
+
+* Key-based auth is attempted first (reads `~/.ssh/id_rsa` by default, or
+  the path given by `--key`).
+* SSH agent forwarding is used automatically if `SSH_AUTH_SOCK` is set.
+* Password auth is available via `--password` as a fallback.
+* Resume is supported: lyra uses the SFTP `Seek` operation to start from
+  the previously saved byte offset.
+
+[source,bash]
+----
+# Copy using default SSH key
+lyra cp file.tar.gz deploy@prod.example.com:/var/releases/
+
+# Explicit key path
+lyra cp --key ~/.ssh/id_ed25519 report.pdf admin@10.0.0.5:/reports/
+
+# Password auth
+lyra cp --password s3cr3t data.sql user@legacy-host:/var/backups/
+----
+
+=== FTP
+
+FTP transfers use the `github.com/jlaffaye/ftp` package.
+Resumable FTP transfers are supported via the FTP `REST` (restart) command
+when the server advertises the `REST STREAM` feature.
+
+[source,bash]
+----
+lyra cp ftp://ftpuser:p4ss@files.example.com/pub/dataset.zip ./
+----
+
+---
+
+== Cloud Providers
+
+=== Google Drive
+
+* Scope: `https://www.googleapis.com/auth/drive.file` (access only to files
+  created or opened by lyra).
+* Large files use the Drive v3 *resumable upload* API with 8 MB chunks.
+* Interrupted uploads resume via the saved `uploadType=resumable` URI stored
+  in the resume state file.
+* Paths beginning with `gdrive://` are resolved relative to the root of your
+  My Drive.
+
+=== Dropbox
+
+* Uses the Dropbox v2 API (`dropbox-sdk-go-unofficial/v6`).
+* Files ≤ 150 MB are uploaded in a single request.
+* Larger files use the upload-session API:
+  `/upload_session/start` → `/upload_session/append_v2` → `/upload_session/finish`
+* The session ID and offset are persisted in the resume state, allowing
+  interrupted uploads to continue from the last committed chunk.
+
+=== OneDrive
+
+* Uses the Microsoft Graph API v1.0.
+* Paths are relative to the authenticated user's personal OneDrive root.
+* Large files use *upload sessions* (`/createUploadSession`), which support
+  byte-range resumption via the saved `uploadUrl`.
+
+---
+
+== Internals
+
+=== Fast Local Copy
+
+* *Small files* (< 512 MB): single-threaded copy with a 32 MB I/O buffer.
+* *Large files* (≥ 512 MB): producer / consumer pipeline — a reader goroutine
+  fills a buffered channel of 32 MB chunks; a writer goroutine drains it to
+  disk. This saturates sequential I/O on NVMe drives.
+* *Recursive copy*: a goroutine pool of 8 workers processes files concurrently,
+  which benefits SSD arrays and network shares.
+* Checksum (SHA-256) verification is performed in a single streaming pass
+  during the copy — no second read is needed.
+
+=== Trash Implementation
+
+[cols="1,2", options="header"]
+|===
+| Platform | Mechanism
+
+| Windows
+| PowerShell `Microsoft.VisualBasic.FileIO.FileSystem.DeleteFile/DeleteDirectory` with `SendToRecycleBin` option — identical to dragging to Recycle Bin
+
+| macOS
+| Moves item to `~/.Trash/` with a collision-safe name
+
+| Linux
+| Follows the https://specifications.freedesktop.org/trash-spec/[freedesktop.org Trash specification]: copies to `~/.local/share/Trash/files/`, writes `.trashinfo` to `~/.local/share/Trash/info/`
+|===
+
+=== Resume State
+
+Each paused transfer is persisted as a JSON file at
+`~/.lyra/resume/<sha256(src+dest)>.json`:
+
+[source,json]
+----
+{
+  "src":         "/mnt/usb/backup.tar.gz",
+  "dest":        "/home/user/backups/backup.tar.gz",
+  "bytes_done":  5100273664,
+  "total_bytes": 10737418240,
+  "timestamp":   "2026-03-29T22:14:07Z",
+  "type":        "local"
+}
+----
+
+On resume:
+
+1. The state file is read.
+2. The destination file is opened in write mode without truncation.
+3. The write cursor is seeked to `bytes_done`.
+4. The source file (or remote stream) is seeked or skipped to `bytes_done`.
+5. Copying continues and the progress bar starts at the saved percentage.
+6. The state file is deleted upon successful completion.
+
+---
+
+== Examples Cookbook
+
+=== Backup home directory to an external drive
+
+[source,bash]
+----
+lyra sync --delete ~/Documents /run/media/user/Backup/Documents
+----
+
+=== Mirror a website's assets to Google Drive
+
+[source,bash]
+----
+lyra cp -r ./dist/ gdrive://MyDrive/website-backups/2026-03-29/ --checksum
+----
+
+=== Recover after an interrupted 10 GB upload
+
+[source,bash]
+----
+lyra resume        # see what is paused
+lyra cp --resume large-video.mkv gdrive://MyDrive/Videos/
+----
+
+=== Sync a project to a remote dev server
+
+[source,bash]
+----
+lyra sync --delete ./my-project/ dev@192.168.1.50:/home/dev/my-project/
+----
+
+=== Batch convert JPEG extensions to lowercase
+
+[source,bash]
+----
+lyra rename --dry-run --case lower *.JPG   # preview first
+lyra rename --case lower *.JPG
+----
+
+=== Create a dated project scaffold and cd into it
+
+[source,bash]
+----
+lmd ~/Projects/2026-03-29-new-feature/src
+----
+
+=== Permanently remove build artefacts
+
+[source,bash]
+----
+lyra rm --permanent -r ./target/ ./dist/ ./node_modules/
+----
+
+---
+
+== Exit Codes
+
+[cols="1,3", options="header"]
+|===
+| Code | Meaning
+
+| `0`
+| Success
+
+| `1`
+| General error (see stderr for details)
+
+| `2`
+| Usage error (invalid flags or missing arguments)
+
+| `3`
+| Source file not found
+
+| `4`
+| Permission denied
+
+| `5`
+| Transfer interrupted (resume state saved)
+|===
+
+---
+
+== Licence
+
+MIT © lyra contributors
