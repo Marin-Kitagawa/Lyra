@@ -3,12 +3,11 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 
 	"github.com/lyra-cli/lyra/internal/resume"
 	"github.com/lyra-cli/lyra/internal/transfer"
+	"github.com/lyra-cli/lyra/internal/tui"
 	"github.com/lyra-cli/lyra/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -73,19 +72,15 @@ func runCp(cmd *cobra.Command, args []string) error {
 	srcType := detectTarget(src)
 	destType := detectTarget(dest)
 
-	// Set up signal handler for pause
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
 	switch {
 	case srcType == "local" && destType == "local":
-		return runLocalCopy(src, dest, sigCh)
+		return runLocalCopy(src, dest)
 
 	case srcType == "ssh" || destType == "ssh":
-		return runSSHCopy(src, dest, sigCh)
+		return runSSHCopy(src, dest)
 
 	case srcType == "ftp" || destType == "ftp":
-		return runFTPCopy(src, dest, sigCh)
+		return runFTPCopy(src, dest)
 
 	case srcType == "gdrive" || destType == "gdrive":
 		return fmt.Errorf("GDrive transfers require authentication; run: lyra auth gdrive")
@@ -119,7 +114,7 @@ func detectTarget(path string) string {
 	}
 }
 
-func runLocalCopy(src, dest string, sigCh chan os.Signal) error {
+func runLocalCopy(src, dest string) error {
 	opts := transfer.LocalOptions{
 		Preserve:    cpPreserve,
 		Recursive:   cpRecursive,
@@ -129,31 +124,40 @@ func runLocalCopy(src, dest string, sigCh chan os.Signal) error {
 		KeepPartial: cpKeepPartial,
 	}
 
-	lt := transfer.NewLocalTransfer(opts)
-
-	// Handle SIGINT for pause
-	go func() {
-		<-sigCh
-		lt.Cancel()
-		fmt.Fprintf(os.Stderr, "\n%s\n",
-			ui.RenderWarning("Transfer paused. Resume with: lyra cp --resume "+src+" "+dest))
-		os.Exit(1)
-	}()
-
-	if err := lt.Copy(src, dest); err != nil {
-		if err.Error() == "transfer paused" {
-			fmt.Println(ui.RenderWarning("Transfer paused. Resume with: lyra cp --resume " + src + " " + dest))
-			return nil
-		}
-		return err
+	// Get file size for progress entry
+	srcInfo, err := os.Stat(src)
+	if err != nil {
+		return fmt.Errorf("source does not exist: %w", err)
 	}
 
-	lt.Wait()
+	pp := tui.NewProgressProgram("copying", nil)
+
+	var size int64
+	if !srcInfo.IsDir() {
+		size = srcInfo.Size()
+	}
+	entry := pp.Add(src, size)
+
+	lt := transfer.NewLocalTransfer(opts, entry.Report, nil)
+
+	go func() {
+		err := lt.Copy(src, dest)
+		entry.Finish(err)
+	}()
+
+	paused := pp.Run()
+
+	if paused {
+		lt.Cancel()
+		fmt.Println(ui.RenderWarning("Transfer paused. Resume with: lyra cp --resume " + src + " " + dest))
+		return nil
+	}
+
 	fmt.Println(ui.RenderSuccess("Copy complete!"))
 	return nil
 }
 
-func runSSHCopy(src, dest string, sigCh chan os.Signal) error {
+func runSSHCopy(src, dest string) error {
 	opts := transfer.SSHOptions{
 		Password:    cpPassword,
 		KeyFile:     cpKeyFile,
@@ -163,86 +167,85 @@ func runSSHCopy(src, dest string, sigCh chan os.Signal) error {
 		KeepPartial: cpKeepPartial,
 	}
 
-	st := transfer.NewSSHTransfer(opts)
+	pp := tui.NewProgressProgram("copying", nil)
+	entry := pp.Add(src, -1)
 
-	go func() {
-		<-sigCh
-		st.Cancel()
-		fmt.Fprintf(os.Stderr, "\n%s\n",
-			ui.RenderWarning("Transfer paused. Resume with: lyra cp --resume "+src+" "+dest))
-		os.Exit(1)
-	}()
+	st := transfer.NewSSHTransfer(opts, entry.Report, nil)
 
 	srcType := detectTarget(src)
-	destType := detectTarget(dest)
 
-	var err error
-	if srcType == "ssh" {
-		// Download from SSH
-		target, parseErr := transfer.ParseSSHTarget(src)
-		if parseErr != nil {
-			return fmt.Errorf("invalid SSH source: %w", parseErr)
+	go func() {
+		var err error
+		if srcType == "ssh" {
+			target, parseErr := transfer.ParseSSHTarget(src)
+			if parseErr != nil {
+				entry.Finish(fmt.Errorf("invalid SSH source: %w", parseErr))
+				return
+			}
+			err = st.Download(target, dest)
+		} else {
+			target, parseErr := transfer.ParseSSHTarget(dest)
+			if parseErr != nil {
+				entry.Finish(fmt.Errorf("invalid SSH destination: %w", parseErr))
+				return
+			}
+			err = st.Upload(src, target)
 		}
-		err = st.Download(target, dest)
-	} else {
-		// Upload to SSH
-		target, parseErr := transfer.ParseSSHTarget(dest)
-		if parseErr != nil {
-			return fmt.Errorf("invalid SSH destination: %w", parseErr)
-		}
-		err = st.Upload(src, target)
+		entry.Finish(err)
+	}()
+
+	paused := pp.Run()
+
+	if paused {
+		st.Cancel()
+		fmt.Println(ui.RenderWarning("Transfer paused. Resume with: lyra cp --resume " + src + " " + dest))
+		return nil
 	}
 
-	if err != nil {
-		return err
-	}
-
-	_ = srcType
-	_ = destType
-
-	st.Wait()
 	fmt.Println(ui.RenderSuccess("Copy complete!"))
 	return nil
 }
 
-func runFTPCopy(src, dest string, sigCh chan os.Signal) error {
+func runFTPCopy(src, dest string) error {
 	opts := transfer.FTPOptions{
 		Resume:      cpResume,
 		KeepPartial: cpKeepPartial,
 	}
 
-	ft := transfer.NewFTPTransfer(opts)
+	pp := tui.NewProgressProgram("copying", nil)
+	entry := pp.Add(src, -1)
 
-	// FTP doesn't support cancellation mid-stream easily, but we handle signal
-	go func() {
-		<-sigCh
-		fmt.Fprintf(os.Stderr, "\n%s\n",
-			ui.RenderWarning("Transfer interrupted. Resume with: lyra cp --resume "+src+" "+dest))
-		os.Exit(1)
-	}()
+	ft := transfer.NewFTPTransfer(opts, entry.Report, nil)
 
 	srcType := detectTarget(src)
 
-	var err error
-	if srcType == "ftp" {
-		target, parseErr := transfer.ParseFTPTarget(src)
-		if parseErr != nil {
-			return fmt.Errorf("invalid FTP source: %w", parseErr)
+	go func() {
+		var err error
+		if srcType == "ftp" {
+			target, parseErr := transfer.ParseFTPTarget(src)
+			if parseErr != nil {
+				entry.Finish(fmt.Errorf("invalid FTP source: %w", parseErr))
+				return
+			}
+			err = ft.Download(target, dest)
+		} else {
+			target, parseErr := transfer.ParseFTPTarget(dest)
+			if parseErr != nil {
+				entry.Finish(fmt.Errorf("invalid FTP destination: %w", parseErr))
+				return
+			}
+			err = ft.Upload(src, target)
 		}
-		err = ft.Download(target, dest)
-	} else {
-		target, parseErr := transfer.ParseFTPTarget(dest)
-		if parseErr != nil {
-			return fmt.Errorf("invalid FTP destination: %w", parseErr)
-		}
-		err = ft.Upload(src, target)
+		entry.Finish(err)
+	}()
+
+	paused := pp.Run()
+
+	if paused {
+		fmt.Println(ui.RenderWarning("Transfer interrupted. Resume with: lyra cp --resume " + src + " " + dest))
+		return nil
 	}
 
-	if err != nil {
-		return err
-	}
-
-	ft.Wait()
 	fmt.Println(ui.RenderSuccess("Copy complete!"))
 	return nil
 }

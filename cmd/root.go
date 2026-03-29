@@ -8,6 +8,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var noSummary bool
+
 var rootCmd = &cobra.Command{
 	Use:   "lyra",
 	Short: "lyra — a beautiful, feature-rich replacement for cp, mkdir, rm and more",
@@ -38,6 +40,7 @@ func Execute() {
 }
 
 func init() {
+	rootCmd.PersistentFlags().BoolVar(&noSummary, "no-summary", false, "Disable summary table after batch operations")
 	rootCmd.AddCommand(cpCmd)
 	rootCmd.AddCommand(mdCmd)
 	rootCmd.AddCommand(rmCmd)

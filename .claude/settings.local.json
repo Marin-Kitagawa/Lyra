@@ -16,7 +16,8 @@
       "Bash(./lyra.exe resume:*)",
       "Bash(./lyra.exe rm:*)",
       "Bash(wc -l /c/Users/Ahri/Projects/better-copy/**/*.go /c/Users/Ahri/Projects/better-copy/*.go)",
-      "Bash(go run:*)"
+      "Bash(go run:*)",
+      "Bash(go get:*)"
     ]
   }
 }

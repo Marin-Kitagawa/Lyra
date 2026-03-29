@@ -7,10 +7,9 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/lyra-cli/lyra/internal/tui"
 	"github.com/lyra-cli/lyra/internal/ui"
 	"github.com/spf13/cobra"
-	"github.com/vbauerster/mpb/v8"
-	"github.com/vbauerster/mpb/v8/decor"
 )
 
 var mvCmd = &cobra.Command{
@@ -55,12 +54,23 @@ func runMv(cmd *cobra.Command, args []string) error {
 	}
 
 	// Cross-device move: copy then remove
+	var records []tui.SummaryRecord
+
 	if srcInfo.IsDir() {
-		if err := moveDir(src, dest); err != nil {
+		if err := moveDirBubble(src, dest, &records); err != nil {
 			return err
 		}
 	} else {
-		if err := moveFile(src, dest, srcInfo); err != nil {
+		start := time.Now()
+		err := moveFileBubble(src, dest, srcInfo)
+		records = append(records, tui.SummaryRecord{
+			Name:     filepath.Base(src),
+			Op:       "Move",
+			Err:      err,
+			Size:     srcInfo.Size(),
+			Duration: time.Since(start),
+		})
+		if err != nil {
 			return err
 		}
 	}
@@ -70,11 +80,30 @@ func runMv(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("move failed: could not remove source: %w", err)
 	}
 
+	if !noSummary {
+		tui.ShowSummary(records)
+	}
+
 	fmt.Println(ui.RenderSuccess("Move complete!"))
 	return nil
 }
 
-func moveFile(src, dest string, srcInfo os.FileInfo) error {
+func moveFileBubble(src, dest string, srcInfo os.FileInfo) error {
+	pp := tui.NewProgressProgram("moving", nil)
+	entry := pp.Add(filepath.Base(src), srcInfo.Size())
+
+	var copyErr error
+	go func() {
+		err := moveFileIO(src, dest, srcInfo, entry.Report)
+		entry.Finish(err)
+		copyErr = err
+	}()
+
+	pp.Run()
+	return copyErr
+}
+
+func moveFileIO(src, dest string, srcInfo os.FileInfo, reportFn func(int64)) error {
 	srcFile, err := os.Open(src)
 	if err != nil {
 		return fmt.Errorf("could not open source: %w", err)
@@ -95,45 +124,14 @@ func moveFile(src, dest string, srcInfo os.FileInfo) error {
 		os.Chtimes(dest, srcInfo.ModTime(), srcInfo.ModTime())
 	}()
 
-	p := mpb.New(
-		mpb.WithWidth(60),
-		mpb.WithRefreshRate(100*time.Millisecond),
-	)
-	name := filepath.Base(src)
-	if len(name) > 20 {
-		name = "..." + name[len(name)-17:]
-	}
-	bar := p.New(srcInfo.Size(),
-		mpb.BarStyle().Lbound("").Filler("█").Tip("▓").Padding("░").Rbound(""),
-		mpb.PrependDecorators(
-			decor.Name(name, decor.WC{W: 22, C: decor.DindentRight | decor.DextraSpace}),
-			decor.CountersKibiByte("% .2f / % .2f", decor.WCSyncWidth),
-		),
-		mpb.AppendDecorators(
-			decor.EwmaETA(decor.ET_STYLE_GO, 30, decor.WCSyncWidth),
-			decor.Name(" "),
-			decor.EwmaSpeed(decor.SizeB1024(0), "% .2f", 30, decor.WCSyncWidth),
-			decor.Name(" "),
-			decor.OnComplete(
-				decor.NewPercentage("%.2f", decor.WCSyncWidth),
-				"done",
-			),
-		),
-	)
-
 	buf := make([]byte, 1024*1024)
-	start := time.Now()
 
 	for {
 		n, err := srcFile.Read(buf)
 		if n > 0 {
 			nw, werr := destFile.Write(buf[:n])
-			elapsed := time.Since(start)
-			if elapsed > 0 {
-				bar.EwmaIncrInt64(int64(nw), elapsed)
-				start = time.Now()
-			} else {
-				bar.IncrInt64(int64(nw))
+			if reportFn != nil {
+				reportFn(int64(nw))
 			}
 			if werr != nil {
 				os.Remove(dest)
@@ -149,11 +147,10 @@ func moveFile(src, dest string, srcInfo os.FileInfo) error {
 		}
 	}
 
-	p.Wait()
 	return nil
 }
 
-func moveDir(src, dest string) error {
+func moveDirBubble(src, dest string, records *[]tui.SummaryRecord) error {
 	if err := os.MkdirAll(dest, 0755); err != nil {
 		return err
 	}
@@ -172,6 +169,15 @@ func moveDir(src, dest string) error {
 			return os.MkdirAll(destPath, info.Mode())
 		}
 
-		return moveFile(path, destPath, info)
+		start := time.Now()
+		moveErr := moveFileBubble(path, destPath, info)
+		*records = append(*records, tui.SummaryRecord{
+			Name:     filepath.Base(path),
+			Op:       "Move",
+			Err:      moveErr,
+			Size:     info.Size(),
+			Duration: time.Since(start),
+		})
+		return moveErr
 	})
 }

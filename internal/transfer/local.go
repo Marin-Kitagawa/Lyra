@@ -10,11 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
 
 	"github.com/lyra-cli/lyra/internal/resume"
-	"github.com/vbauerster/mpb/v8"
-	"github.com/vbauerster/mpb/v8/decor"
 )
 
 const (
@@ -35,24 +32,24 @@ type LocalOptions struct {
 
 // LocalTransfer handles local file/directory transfers
 type LocalTransfer struct {
-	opts   LocalOptions
-	mgr    *mpb.Progress
-	ctx    context.Context
-	cancel context.CancelFunc
+	opts     LocalOptions
+	ctx      context.Context
+	cancel   context.CancelFunc
+	reportFn func(int64) // called with bytes written; can be nil
+	doneFn   func(error) // called when done; can be nil
 }
 
-// NewLocalTransfer creates a new local transfer handler
-func NewLocalTransfer(opts LocalOptions) *LocalTransfer {
+// NewLocalTransfer creates a new local transfer handler.
+// reportFn is called with each chunk of bytes written (can be nil).
+// doneFn is called when the transfer completes (can be nil).
+func NewLocalTransfer(opts LocalOptions, reportFn func(int64), doneFn func(error)) *LocalTransfer {
 	ctx, cancel := context.WithCancel(context.Background())
-	p := mpb.New(
-		mpb.WithWidth(60),
-		mpb.WithRefreshRate(100*time.Millisecond),
-	)
 	return &LocalTransfer{
-		opts:   opts,
-		mgr:    p,
-		ctx:    ctx,
-		cancel: cancel,
+		opts:     opts,
+		ctx:      ctx,
+		cancel:   cancel,
+		reportFn: reportFn,
+		doneFn:   doneFn,
 	}
 }
 
@@ -76,14 +73,21 @@ func (lt *LocalTransfer) Copy(src, dest string) error {
 		return fmt.Errorf("source and destination are the same file")
 	}
 
+	var copyErr error
 	if srcInfo.IsDir() {
 		if !lt.opts.Recursive {
-			return fmt.Errorf("source is a directory; use -r for recursive copy")
+			copyErr = fmt.Errorf("source is a directory; use -r for recursive copy")
+		} else {
+			copyErr = lt.copyDir(absSrc, absDest)
 		}
-		return lt.copyDir(absSrc, absDest)
+	} else {
+		copyErr = lt.copyFile(absSrc, absDest, srcInfo)
 	}
 
-	return lt.copyFile(absSrc, absDest, srcInfo)
+	if lt.doneFn != nil {
+		lt.doneFn(copyErr)
+	}
+	return copyErr
 }
 
 // copyDir copies a directory recursively using a goroutine pool
@@ -164,31 +168,6 @@ func (lt *LocalTransfer) copyDir(src, dest string) error {
 	return nil
 }
 
-// addBar adds a progress bar to the manager
-func (lt *LocalTransfer) addBar(name string, total int64) *mpb.Bar {
-	shortName := name
-	if len(shortName) > 20 {
-		shortName = "..." + shortName[len(shortName)-17:]
-	}
-	return lt.mgr.New(total,
-		mpb.BarStyle().Lbound("").Filler("█").Tip("▓").Padding("░").Rbound(""),
-		mpb.PrependDecorators(
-			decor.Name(shortName, decor.WC{W: 22, C: decor.DindentRight | decor.DextraSpace}),
-			decor.CountersKibiByte("% .2f / % .2f", decor.WCSyncWidth),
-		),
-		mpb.AppendDecorators(
-			decor.EwmaETA(decor.ET_STYLE_GO, 30, decor.WCSyncWidth),
-			decor.Name(" "),
-			decor.EwmaSpeed(decor.SizeB1024(0), "% .2f", 30, decor.WCSyncWidth),
-			decor.Name(" "),
-			decor.OnComplete(
-				decor.NewPercentage("%.2f", decor.WCSyncWidth),
-				"done",
-			),
-		),
-	)
-}
-
 // copyFile copies a single file
 func (lt *LocalTransfer) copyFile(src, dest string, srcInfo fs.FileInfo) error {
 	if lt.opts.Sync {
@@ -235,7 +214,7 @@ func (lt *LocalTransfer) copyFile(src, dest string, srcInfo fs.FileInfo) error {
 
 	remaining := srcInfo.Size() - startOffset
 
-	// For empty files, skip the progress bar
+	// For empty files, skip copy
 	if remaining == 0 {
 		destFile.Close()
 		if lt.opts.Preserve {
@@ -246,13 +225,11 @@ func (lt *LocalTransfer) copyFile(src, dest string, srcInfo fs.FileInfo) error {
 		return nil
 	}
 
-	bar := lt.addBar(filepath.Base(src), remaining)
-
 	var copyErr error
 	if srcInfo.Size() > largeFileThreshold {
-		copyErr = lt.copyLargeFile(srcFile, destFile, bar, src, dest, startOffset, srcInfo.Size())
+		copyErr = lt.copyLargeFile(srcFile, destFile, src, dest, startOffset, srcInfo.Size())
 	} else {
-		copyErr = lt.copySmall(srcFile, destFile, bar, src, dest, startOffset, srcInfo.Size())
+		copyErr = lt.copySmall(srcFile, destFile, src, dest, startOffset, srcInfo.Size())
 	}
 
 	destFile.Close()
@@ -280,10 +257,9 @@ func (lt *LocalTransfer) copyFile(src, dest string, srcInfo fs.FileInfo) error {
 }
 
 // copySmall copies a file using a simple buffered approach
-func (lt *LocalTransfer) copySmall(src *os.File, dest *os.File, bar *mpb.Bar, srcPath, destPath string, startOffset, totalSize int64) error {
+func (lt *LocalTransfer) copySmall(src *os.File, dest *os.File, srcPath, destPath string, startOffset, totalSize int64) error {
 	buf := make([]byte, 1024*1024)
 	var written int64
-	start := time.Now()
 
 	for {
 		select {
@@ -304,12 +280,8 @@ func (lt *LocalTransfer) copySmall(src *os.File, dest *os.File, bar *mpb.Bar, sr
 		if n > 0 {
 			nw, werr := dest.Write(buf[:n])
 			written += int64(nw)
-			elapsed := time.Since(start)
-			if elapsed > 0 {
-				bar.EwmaIncrInt64(int64(nw), elapsed)
-				start = time.Now()
-			} else {
-				bar.IncrInt64(int64(nw))
+			if lt.reportFn != nil {
+				lt.reportFn(int64(nw))
 			}
 			if werr != nil {
 				return fmt.Errorf("write error: %w", werr)
@@ -335,7 +307,7 @@ type pipelineChunk struct {
 }
 
 // copyLargeFile copies a large file using a reader/writer pipeline
-func (lt *LocalTransfer) copyLargeFile(src *os.File, dest *os.File, bar *mpb.Bar, srcPath, destPath string, startOffset, totalSize int64) error {
+func (lt *LocalTransfer) copyLargeFile(src *os.File, dest *os.File, srcPath, destPath string, startOffset, totalSize int64) error {
 	chunkCh := make(chan pipelineChunk, 4)
 	doneCh := make(chan error, 1)
 	var written int64
@@ -361,7 +333,6 @@ func (lt *LocalTransfer) copyLargeFile(src *os.File, dest *os.File, bar *mpb.Bar
 	}()
 
 	go func() {
-		start := time.Now()
 		for chunk := range chunkCh {
 			if chunk.err != nil {
 				doneCh <- chunk.err
@@ -384,12 +355,8 @@ func (lt *LocalTransfer) copyLargeFile(src *os.File, dest *os.File, bar *mpb.Bar
 
 			nw, err := dest.Write(chunk.data[:chunk.n])
 			written += int64(nw)
-			elapsed := time.Since(start)
-			if elapsed > 0 {
-				bar.EwmaIncrInt64(int64(nw), elapsed)
-				start = time.Now()
-			} else {
-				bar.IncrInt64(int64(nw))
+			if lt.reportFn != nil {
+				lt.reportFn(int64(nw))
 			}
 			if err != nil {
 				doneCh <- fmt.Errorf("write error: %w", err)
@@ -410,11 +377,6 @@ func (lt *LocalTransfer) copyLargeFile(src *os.File, dest *os.File, bar *mpb.Bar
 // Cancel cancels the transfer
 func (lt *LocalTransfer) Cancel() {
 	lt.cancel()
-}
-
-// Wait waits for all progress bars to finish
-func (lt *LocalTransfer) Wait() {
-	lt.mgr.Wait()
 }
 
 // ChecksumVerify verifies the SHA256 checksums of src and dest match

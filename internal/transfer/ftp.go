@@ -10,8 +10,6 @@ import (
 	"time"
 
 	"github.com/jlaffaye/ftp"
-	"github.com/vbauerster/mpb/v8"
-	"github.com/vbauerster/mpb/v8/decor"
 
 	"github.com/lyra-cli/lyra/internal/resume"
 )
@@ -70,45 +68,20 @@ type FTPOptions struct {
 
 // FTPTransfer handles FTP file transfers
 type FTPTransfer struct {
-	opts   FTPOptions
-	mgr    *mpb.Progress
+	opts     FTPOptions
+	reportFn func(int64) // called with bytes written; can be nil
+	doneFn   func(error) // called when done; can be nil
 }
 
-// NewFTPTransfer creates a new FTP transfer handler
-func NewFTPTransfer(opts FTPOptions) *FTPTransfer {
-	p := mpb.New(
-		mpb.WithWidth(60),
-		mpb.WithRefreshRate(100*time.Millisecond),
-	)
+// NewFTPTransfer creates a new FTP transfer handler.
+// reportFn is called with each chunk of bytes written (can be nil).
+// doneFn is called when the transfer completes (can be nil).
+func NewFTPTransfer(opts FTPOptions, reportFn func(int64), doneFn func(error)) *FTPTransfer {
 	return &FTPTransfer{
-		opts: opts,
-		mgr:  p,
+		opts:     opts,
+		reportFn: reportFn,
+		doneFn:   doneFn,
 	}
-}
-
-// addBar adds a progress bar
-func (ft *FTPTransfer) addBar(name string, total int64) *mpb.Bar {
-	shortName := name
-	if len(shortName) > 20 {
-		shortName = "..." + shortName[len(shortName)-17:]
-	}
-	return ft.mgr.New(total,
-		mpb.BarStyle().Lbound("").Filler("█").Tip("▓").Padding("░").Rbound(""),
-		mpb.PrependDecorators(
-			decor.Name(shortName, decor.WC{W: 22, C: decor.DindentRight | decor.DextraSpace}),
-			decor.CountersKibiByte("% .2f / % .2f", decor.WCSyncWidth),
-		),
-		mpb.AppendDecorators(
-			decor.EwmaETA(decor.ET_STYLE_GO, 30, decor.WCSyncWidth),
-			decor.Name(" "),
-			decor.EwmaSpeed(decor.SizeB1024(0), "% .2f", 30, decor.WCSyncWidth),
-			decor.Name(" "),
-			decor.OnComplete(
-				decor.NewPercentage("%.2f", decor.WCSyncWidth),
-				"done",
-			),
-		),
-	)
 }
 
 // connect establishes an FTP connection
@@ -165,18 +138,15 @@ func (ft *FTPTransfer) Upload(localPath string, target *FTPTarget) error {
 	remaining := localStat.Size()
 
 	if startOffset > 0 {
-		// Use REST command for resumable FTP
 		if _, err := localFile.Seek(startOffset, io.SeekStart); err != nil {
 			return err
 		}
 		remaining = localStat.Size() - startOffset
 	}
 
-	bar := ft.addBar(filepath.Base(localPath), remaining)
 	trackedReader := &ftpProgressReader{
-		r:         reader,
-		bar:       bar,
-		startTime: time.Now(),
+		r:        reader,
+		reportFn: ft.reportFn,
 	}
 
 	var uploadErr error
@@ -195,10 +165,17 @@ func (ft *FTPTransfer) Upload(localPath string, target *FTPTarget) error {
 			Type:       resume.TypeFTP,
 		}
 		resume.Save(state)
+		if ft.doneFn != nil {
+			ft.doneFn(uploadErr)
+		}
 		return fmt.Errorf("FTP upload failed: %w", uploadErr)
 	}
 
+	_ = remaining
 	resume.Delete(localPath, target.Path)
+	if ft.doneFn != nil {
+		ft.doneFn(nil)
+	}
 	return nil
 }
 
@@ -255,25 +232,23 @@ func (ft *FTPTransfer) Download(target *FTPTarget, localPath string) error {
 	if remaining < 0 {
 		remaining = 0
 	}
+	_ = remaining
 
-	bar := ft.addBar(filepath.Base(target.Path), remaining)
 	buf := make([]byte, 32*1024)
 	var written int64
-	start := time.Now()
 
 	for {
 		n, err := ftpReader.Read(buf)
 		if n > 0 {
 			nw, werr := localFile.Write(buf[:n])
 			written += int64(nw)
-			elapsed := time.Since(start)
-			if elapsed > 0 {
-				bar.EwmaIncrInt64(int64(nw), elapsed)
-				start = time.Now()
-			} else {
-				bar.IncrInt64(int64(nw))
+			if ft.reportFn != nil {
+				ft.reportFn(int64(nw))
 			}
 			if werr != nil {
+				if ft.doneFn != nil {
+					ft.doneFn(werr)
+				}
 				return fmt.Errorf("write error: %w", werr)
 			}
 		}
@@ -281,37 +256,33 @@ func (ft *FTPTransfer) Download(target *FTPTarget, localPath string) error {
 			break
 		}
 		if err != nil {
+			if ft.doneFn != nil {
+				ft.doneFn(err)
+			}
 			return fmt.Errorf("FTP read error: %w", err)
 		}
 	}
 
 	resume.Delete(target.Path, localPath)
+	if ft.doneFn != nil {
+		ft.doneFn(nil)
+	}
 	return nil
-}
-
-// Wait waits for all progress bars to finish
-func (ft *FTPTransfer) Wait() {
-	ft.mgr.Wait()
 }
 
 // ftpProgressReader is a reader that tracks progress for FTP uploads
 type ftpProgressReader struct {
 	r         io.Reader
-	bar       *mpb.Bar
+	reportFn  func(int64)
 	bytesRead int64
-	startTime time.Time
 }
 
 func (r *ftpProgressReader) Read(p []byte) (int, error) {
 	n, err := r.r.Read(p)
 	if n > 0 {
 		r.bytesRead += int64(n)
-		elapsed := time.Since(r.startTime)
-		if elapsed > 0 {
-			r.bar.EwmaIncrInt64(int64(n), elapsed)
-			r.startTime = time.Now()
-		} else {
-			r.bar.IncrInt64(int64(n))
+		if r.reportFn != nil {
+			r.reportFn(int64(n))
 		}
 	}
 	return n, err

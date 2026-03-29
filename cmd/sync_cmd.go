@@ -11,10 +11,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/lyra-cli/lyra/internal/tui"
 	"github.com/lyra-cli/lyra/internal/ui"
 	"github.com/spf13/cobra"
-	"github.com/vbauerster/mpb/v8"
-	"github.com/vbauerster/mpb/v8/decor"
 )
 
 var (
@@ -221,69 +220,96 @@ func mergeSyncActions(forward, reverse []syncAction) []syncAction {
 	return merged
 }
 
-// executeSyncActions executes all sync actions with a progress display
+// executeSyncActions executes all sync actions with a BubbleTea progress display
 func executeSyncActions(actions []syncAction) error {
-	var totalSize int64
+	// Separate copy and delete actions
+	var copyActions []syncAction
+	var deleteActions []syncAction
 	for _, a := range actions {
-		totalSize += a.size
+		if a.op == "copy" {
+			copyActions = append(copyActions, a)
+		} else {
+			deleteActions = append(deleteActions, a)
+		}
 	}
 
-	p := mpb.New(
-		mpb.WithWidth(60),
-		mpb.WithRefreshRate(100*time.Millisecond),
-	)
+	var records []tui.SummaryRecord
+	var mu sync.Mutex
 
-	var overallBar *mpb.Bar
-	if totalSize > 0 {
-		overallBar = p.New(totalSize,
-			mpb.BarStyle().Lbound("").Filler("█").Tip("▓").Padding("░").Rbound(""),
-			mpb.PrependDecorators(
-				decor.Name("Overall", decor.WC{W: 22, C: decor.DindentRight | decor.DextraSpace}),
-				decor.CountersKibiByte("% .2f / % .2f", decor.WCSyncWidth),
-			),
-			mpb.AppendDecorators(
-				decor.EwmaETA(decor.ET_STYLE_GO, 30),
-				decor.Name(" "),
-				decor.NewPercentage("%.2f"),
-			),
-		)
-	}
+	// Handle copy actions with progress
+	if len(copyActions) > 0 {
+		pp := tui.NewProgressProgram("syncing", nil)
+		entries := make([]*tui.Entry, len(copyActions))
+		for i, a := range copyActions {
+			entries[i] = pp.Add(filepath.Base(a.src), a.size)
+		}
 
-	// Process actions concurrently
-	semaphore := make(chan struct{}, 4)
-	var wg sync.WaitGroup
-	errCh := make(chan error, len(actions))
+		semaphore := make(chan struct{}, 4)
+		var wg sync.WaitGroup
+		errCh := make(chan error, len(copyActions))
 
-	for _, action := range actions {
-		a := action
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			semaphore <- struct{}{}
-			defer func() { <-semaphore }()
+		for i, action := range copyActions {
+			a := action
+			entry := entries[i]
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				semaphore <- struct{}{}
+				defer func() { <-semaphore }()
 
-			switch a.op {
-			case "copy":
-				err := syncCopyFile(a.src, a.dest, overallBar)
+				start := time.Now()
+				err := syncCopyFile(a.src, a.dest, entry.Report)
+				entry.Finish(err)
+				mu.Lock()
+				records = append(records, tui.SummaryRecord{
+					Name:     filepath.Base(a.src),
+					Op:       "Copy",
+					Err:      err,
+					Size:     a.size,
+					Duration: time.Since(start),
+				})
+				mu.Unlock()
 				if err != nil {
 					errCh <- fmt.Errorf("failed to copy %s: %w", a.src, err)
 				}
-			case "delete":
-				if err := os.RemoveAll(a.dest); err != nil {
-					errCh <- fmt.Errorf("failed to delete %s: %w", a.dest, err)
-				}
-			}
+			}()
+		}
+
+		// Wait for all goroutines in background, then pp.Run() blocks
+		go func() {
+			wg.Wait()
+			close(errCh)
 		}()
+
+		pp.Run()
+
+		for err := range errCh {
+			if err != nil {
+				return err
+			}
+		}
 	}
 
-	wg.Wait()
-	p.Wait()
-	close(errCh)
-
-	for err := range errCh {
+	// Handle delete actions
+	for _, a := range deleteActions {
+		start := time.Now()
+		err := os.RemoveAll(a.dest)
+		mu.Lock()
+		records = append(records, tui.SummaryRecord{
+			Name:     filepath.Base(a.dest),
+			Op:       "Delete",
+			Err:      err,
+			Size:     -1,
+			Duration: time.Since(start),
+		})
+		mu.Unlock()
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to delete %s: %w", a.dest, err)
 		}
+	}
+
+	if !noSummary {
+		tui.ShowSummary(records)
 	}
 
 	fmt.Println(ui.RenderSuccess("Sync complete!"))
@@ -291,7 +317,7 @@ func executeSyncActions(actions []syncAction) error {
 }
 
 // syncCopyFile copies a file as part of sync
-func syncCopyFile(src, dest string, overallBar *mpb.Bar) error {
+func syncCopyFile(src, dest string, reportFn func(int64)) error {
 	srcFile, err := os.Open(src)
 	if err != nil {
 		return err
@@ -318,21 +344,15 @@ func syncCopyFile(src, dest string, overallBar *mpb.Bar) error {
 	}()
 
 	buf := make([]byte, 1024*1024)
-	start := time.Now()
 	for {
 		n, err := srcFile.Read(buf)
 		if n > 0 {
-			if _, werr := destFile.Write(buf[:n]); werr != nil {
-				return werr
+			nw, werr := destFile.Write(buf[:n])
+			if reportFn != nil {
+				reportFn(int64(nw))
 			}
-			if overallBar != nil {
-				elapsed := time.Since(start)
-				if elapsed > 0 {
-					overallBar.EwmaIncrInt64(int64(n), elapsed)
-					start = time.Now()
-				} else {
-					overallBar.IncrInt64(int64(n))
-				}
+			if werr != nil {
+				return werr
 			}
 		}
 		if err == io.EOF {

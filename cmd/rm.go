@@ -3,18 +3,21 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"time"
 
 	"github.com/lyra-cli/lyra/internal/trash"
+	"github.com/lyra-cli/lyra/internal/tui"
 	"github.com/lyra-cli/lyra/internal/ui"
 	"github.com/spf13/cobra"
 )
 
 var (
-	rmPermanent  bool
-	rmListTrash  bool
-	rmRestore    string
-	rmForce      bool
-	rmRecursive  bool
+	rmPermanent bool
+	rmListTrash bool
+	rmRestore   string
+	rmForce     bool
+	rmRecursive bool
 )
 
 var rmCmd = &cobra.Command{
@@ -57,13 +60,24 @@ func runRm(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no files specified")
 	}
 
+	var records []tui.SummaryRecord
 	for _, path := range args {
-		if err := removeFile(path); err != nil {
-			if rmForce {
-				continue
-			}
+		start := time.Now()
+		err := removeFile(path)
+		records = append(records, tui.SummaryRecord{
+			Name:     filepath.Base(path),
+			Op:       "Delete",
+			Err:      err,
+			Size:     -1,
+			Duration: time.Since(start),
+		})
+		if err != nil && !rmForce {
 			return err
 		}
+	}
+
+	if !noSummary {
+		tui.ShowSummary(records)
 	}
 
 	return nil

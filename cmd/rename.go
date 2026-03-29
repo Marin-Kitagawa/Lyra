@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/lyra-cli/lyra/internal/tui"
 	"github.com/lyra-cli/lyra/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -98,11 +100,25 @@ func runRename(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	// Execute renames
+	// Execute renames and collect results
+	var records []tui.SummaryRecord
 	for _, op := range ops {
-		if err := os.Rename(op.oldPath, op.newPath); err != nil {
-			return fmt.Errorf("could not rename %s → %s: %w", op.oldPath, op.newPath, err)
+		start := time.Now()
+		renameErr := os.Rename(op.oldPath, op.newPath)
+		records = append(records, tui.SummaryRecord{
+			Name:     filepath.Base(op.oldPath),
+			Op:       "Rename",
+			Err:      renameErr,
+			Size:     -1,
+			Duration: time.Since(start),
+		})
+		if renameErr != nil {
+			return fmt.Errorf("could not rename %s → %s: %w", op.oldPath, op.newPath, renameErr)
 		}
+	}
+
+	if !noSummary {
+		tui.ShowSummary(records)
 	}
 
 	fmt.Println(ui.RenderSuccess(fmt.Sprintf("Renamed %d file(s).", len(ops))))

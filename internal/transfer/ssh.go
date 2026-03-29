@@ -12,8 +12,6 @@ import (
 
 	"github.com/mitchellh/go-homedir"
 	"github.com/pkg/sftp"
-	"github.com/vbauerster/mpb/v8"
-	"github.com/vbauerster/mpb/v8/decor"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 
@@ -104,24 +102,24 @@ type SSHOptions struct {
 
 // SSHTransfer handles SSH/SFTP file transfers
 type SSHTransfer struct {
-	opts   SSHOptions
-	mgr    *mpb.Progress
-	ctx    context.Context
-	cancel context.CancelFunc
+	opts     SSHOptions
+	ctx      context.Context
+	cancel   context.CancelFunc
+	reportFn func(int64) // called with bytes written; can be nil
+	doneFn   func(error) // called when done; can be nil
 }
 
-// NewSSHTransfer creates a new SSH transfer handler
-func NewSSHTransfer(opts SSHOptions) *SSHTransfer {
+// NewSSHTransfer creates a new SSH transfer handler.
+// reportFn is called with each chunk of bytes written (can be nil).
+// doneFn is called when the transfer completes (can be nil).
+func NewSSHTransfer(opts SSHOptions, reportFn func(int64), doneFn func(error)) *SSHTransfer {
 	ctx, cancel := context.WithCancel(context.Background())
-	p := mpb.New(
-		mpb.WithWidth(60),
-		mpb.WithRefreshRate(100*time.Millisecond),
-	)
 	return &SSHTransfer{
-		opts:   opts,
-		mgr:    p,
-		ctx:    ctx,
-		cancel: cancel,
+		opts:     opts,
+		ctx:      ctx,
+		cancel:   cancel,
+		reportFn: reportFn,
+		doneFn:   doneFn,
 	}
 }
 
@@ -176,31 +174,6 @@ func (st *SSHTransfer) buildSSHConfig(user string) (*ssh.ClientConfig, error) {
 	}, nil
 }
 
-// addBar adds a progress bar
-func (st *SSHTransfer) addBar(name string, total int64) *mpb.Bar {
-	shortName := name
-	if len(shortName) > 20 {
-		shortName = "..." + shortName[len(shortName)-17:]
-	}
-	return st.mgr.New(total,
-		mpb.BarStyle().Lbound("").Filler("█").Tip("▓").Padding("░").Rbound(""),
-		mpb.PrependDecorators(
-			decor.Name(shortName, decor.WC{W: 22, C: decor.DindentRight | decor.DextraSpace}),
-			decor.CountersKibiByte("% .2f / % .2f", decor.WCSyncWidth),
-		),
-		mpb.AppendDecorators(
-			decor.EwmaETA(decor.ET_STYLE_GO, 30, decor.WCSyncWidth),
-			decor.Name(" "),
-			decor.EwmaSpeed(decor.SizeB1024(0), "% .2f", 30, decor.WCSyncWidth),
-			decor.Name(" "),
-			decor.OnComplete(
-				decor.NewPercentage("%.2f", decor.WCSyncWidth),
-				"done",
-			),
-		),
-	)
-}
-
 // Upload uploads a local file to a remote SSH/SFTP host
 func (st *SSHTransfer) Upload(localPath string, target *SSHTarget) error {
 	config, err := st.buildSSHConfig(target.User)
@@ -220,7 +193,11 @@ func (st *SSHTransfer) Upload(localPath string, target *SSHTarget) error {
 	}
 	defer sftpClient.Close()
 
-	return st.uploadFile(sftpClient, localPath, target.Path)
+	uploadErr := st.uploadFile(sftpClient, localPath, target.Path)
+	if st.doneFn != nil {
+		st.doneFn(uploadErr)
+	}
+	return uploadErr
 }
 
 // Download downloads a file from a remote SSH/SFTP host
@@ -242,7 +219,11 @@ func (st *SSHTransfer) Download(target *SSHTarget, localPath string) error {
 	}
 	defer sftpClient.Close()
 
-	return st.downloadFile(sftpClient, target.Path, localPath)
+	downloadErr := st.downloadFile(sftpClient, target.Path, localPath)
+	if st.doneFn != nil {
+		st.doneFn(downloadErr)
+	}
+	return downloadErr
 }
 
 // uploadFile uploads a single file via SFTP
@@ -296,12 +277,8 @@ func (st *SSHTransfer) uploadFile(client *sftp.Client, localPath, remotePath str
 		}
 	}
 
-	remaining := localStat.Size() - startOffset
-	bar := st.addBar(filepath.Base(localPath), remaining)
-
 	buf := make([]byte, 32*1024)
 	var written int64
-	start := time.Now()
 
 	for {
 		select {
@@ -322,12 +299,8 @@ func (st *SSHTransfer) uploadFile(client *sftp.Client, localPath, remotePath str
 		if n > 0 {
 			nw, werr := remoteFile.Write(buf[:n])
 			written += int64(nw)
-			elapsed := time.Since(start)
-			if elapsed > 0 {
-				bar.EwmaIncrInt64(int64(nw), elapsed)
-				start = time.Now()
-			} else {
-				bar.IncrInt64(int64(nw))
+			if st.reportFn != nil {
+				st.reportFn(int64(nw))
 			}
 			if werr != nil {
 				return fmt.Errorf("remote write error: %w", werr)
@@ -387,12 +360,8 @@ func (st *SSHTransfer) downloadFile(client *sftp.Client, remotePath, localPath s
 	}
 	defer localFile.Close()
 
-	remaining := remoteStat.Size() - startOffset
-	bar := st.addBar(filepath.Base(remotePath), remaining)
-
 	buf := make([]byte, 32*1024)
 	var written int64
-	start := time.Now()
 
 	for {
 		select {
@@ -413,12 +382,8 @@ func (st *SSHTransfer) downloadFile(client *sftp.Client, remotePath, localPath s
 		if n > 0 {
 			nw, werr := localFile.Write(buf[:n])
 			written += int64(nw)
-			elapsed := time.Since(start)
-			if elapsed > 0 {
-				bar.EwmaIncrInt64(int64(nw), elapsed)
-				start = time.Now()
-			} else {
-				bar.IncrInt64(int64(nw))
+			if st.reportFn != nil {
+				st.reportFn(int64(nw))
 			}
 			if werr != nil {
 				return fmt.Errorf("local write error: %w", werr)
@@ -439,9 +404,4 @@ func (st *SSHTransfer) downloadFile(client *sftp.Client, remotePath, localPath s
 // Cancel cancels the transfer
 func (st *SSHTransfer) Cancel() {
 	st.cancel()
-}
-
-// Wait waits for all progress bars to finish
-func (st *SSHTransfer) Wait() {
-	st.mgr.Wait()
 }
