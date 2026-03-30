@@ -10,6 +10,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/dustin/go-humanize"
+	"github.com/lyra-cli/lyra/internal/tui"
 	"github.com/lyra-cli/lyra/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -219,13 +220,18 @@ func runLs(cmd *cobra.Command, args []string) error {
 	}
 
 	if !info.IsDir() {
-		printEntry(path, info, "")
+		tui.Print("\n" + buildEntry(path, info, "") + "\n")
 		return nil
 	}
 
 	if lsTree {
-		fmt.Println(ui.StylePrimary.Bold(true).Render(path))
-		return printTree(path, "", lsAll)
+		var sb strings.Builder
+		sb.WriteString("\n")
+		sb.WriteString(ui.StylePrimary.Bold(true).Render(path) + "\n")
+		buildTree(path, "", lsAll, &sb)
+		sb.WriteString("\n")
+		tui.Print(sb.String())
+		return nil
 	}
 
 	entries, err := os.ReadDir(path)
@@ -247,9 +253,6 @@ func runLs(cmd *cobra.Command, args []string) error {
 
 	sortEntries(fileInfos, lsSort)
 
-	// Header
-	// Layout (visual columns):
-	//   prefix(2) + iconPlaceholder(2) + space(1) + Name(colNameWidth) + space(1) + Size(colSizeWidth) + space(1) + Modified
 	headerStyle := lipgloss.NewStyle().Foreground(ui.ColorMuted).Italic(true)
 	headerLine := "  " + "  " + " " +
 		padRight(headerStyle.Render("Name"), colNameWidth) + " " +
@@ -257,14 +260,18 @@ func runLs(cmd *cobra.Command, args []string) error {
 		headerStyle.Render("Modified")
 	sepLine := "  " + ui.StyleMuted.Render(strings.Repeat("─", 2+1+colNameWidth+1+colSizeWidth+1+14))
 
-	fmt.Println(headerLine)
-	fmt.Println(sepLine)
-
+	var sb strings.Builder
+	sb.WriteString("\n")
+	sb.WriteString(headerLine + "\n")
+	sb.WriteString(sepLine + "\n")
 	for _, fi := range fileInfos {
-		printEntry(path, fi, "  ")
+		sb.WriteString(buildEntry(path, fi, "  ") + "\n")
 	}
+	sb.WriteString("\n")
+	sb.WriteString(ui.StyleMuted.Render(fmt.Sprintf("  %d item%s", len(fileInfos), pluralS(len(fileInfos)))))
+	sb.WriteString("\n")
 
-	fmt.Printf("\n%s\n", ui.StyleMuted.Render(fmt.Sprintf("  %d item%s", len(fileInfos), pluralS(len(fileInfos)))))
+	tui.Print(sb.String())
 	return nil
 }
 
@@ -275,7 +282,9 @@ func pluralS(n int) string {
 	return "s"
 }
 
-func printEntry(dir string, info os.FileInfo, prefix string) {
+// buildEntry returns a formatted directory entry line.
+// All padding uses visibleWidth-aware padRight so ANSI codes never break alignment.
+func buildEntry(dir string, info os.FileInfo, prefix string) string {
 	icon := fileIcon(info)
 	style := fileStyle(info)
 	name := style.Render(info.Name())
@@ -297,16 +306,12 @@ func printEntry(dir string, info os.FileInfo, prefix string) {
 		}
 	}
 
-	// All padding is done via visibleWidth-aware padRight, so ANSI codes
-	// in name/sizeStr do not break column alignment.
-	line := prefix +
+	return prefix +
 		icon + " " +
 		padRight(name, colNameWidth) + " " +
 		padRight(sizeStr, colSizeWidth) + " " +
 		modTime +
 		linkTarget
-
-	fmt.Println(line)
 }
 
 func formatModTime(t time.Time) string {
@@ -342,10 +347,11 @@ func sortEntries(entries []os.FileInfo, by string) {
 	})
 }
 
-func printTree(path, indent string, showHidden bool) error {
+// buildTree writes tree lines into sb recursively.
+func buildTree(path, indent string, showHidden bool, sb *strings.Builder) {
 	entries, err := os.ReadDir(path)
 	if err != nil {
-		return err
+		return
 	}
 
 	var visible []os.DirEntry
@@ -369,10 +375,8 @@ func printTree(path, indent string, showHidden bool) error {
 		}
 
 		icon := fileIcon(fi)
-		style := fileStyle(fi)
-		name := style.Render(e.Name())
-
-		fmt.Printf("%s%s%s %s\n", indent, ui.StyleMuted.Render(connector), icon, name)
+		name := fileStyle(fi).Render(e.Name())
+		sb.WriteString(fmt.Sprintf("%s%s%s %s\n", indent, ui.StyleMuted.Render(connector), icon, name))
 
 		if e.IsDir() {
 			childIndent := indent
@@ -381,10 +385,7 @@ func printTree(path, indent string, showHidden bool) error {
 			} else {
 				childIndent += ui.StyleMuted.Render("│") + "   "
 			}
-			if err := printTree(filepath.Join(path, e.Name()), childIndent, showHidden); err != nil {
-				return err
-			}
+			buildTree(filepath.Join(path, e.Name()), childIndent, showHidden, sb)
 		}
 	}
-	return nil
 }
