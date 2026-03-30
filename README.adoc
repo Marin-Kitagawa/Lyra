@@ -521,7 +521,10 @@ Multiple filters are combined with AND logic.
 | Flag | Description
 
 | `-n`, `--name <pattern>`
-| Glob pattern to match the filename (e.g., `*.log`, `report_*`)
+| Filename pattern — glob by default, regex when `--regex` is set
+
+| `-e`, `--regex`
+| Treat `--name` as a regular expression instead of a glob
 
 | `-s`, `--size <expr>`
 | Size filter: `+1GB` (larger than), `-500KB` (smaller than), `100MB` (exactly)
@@ -540,8 +543,14 @@ Multiple filters are combined with AND logic.
 
 [source,bash]
 ----
-# Find all Go source files
+# Find all Go source files (glob)
 lyra find . --name "*.go"
+
+# Find Go or JS files (regex alternation)
+lyra find . --regex --name '\.(go|js)$'
+
+# Find files whose names contain a number (regex)
+lyra find . --regex --name '\d+'
 
 # Find large files
 lyra find /home --size +1GB
@@ -739,6 +748,10 @@ or case conversion.
 | false
 | Preview renames without applying them
 
+| `-e`, `--regex`
+| false
+| Treat pattern as a regular expression; use `$1`, `$2`, or `${name}` in replacement
+
 | `--seq`
 | false
 | Number files sequentially: `001`, `002`, …
@@ -756,16 +769,43 @@ or case conversion.
 | Zero-padding width for `--seq` (e.g., `3` → `001`)
 |===
 
-==== Examples
+==== Glob mode (default)
 
 [source,bash]
 ----
 # Change all .txt extensions to .bak
 lyra rename "*.txt" "*.bak"
 
-# Rename with prefix
+# Rename with a different prefix
 lyra rename "photo_*.jpg" "holiday_*.jpg"
 
+# Preview without applying
+lyra rename --dry-run "*.jpeg" "*.jpg"
+----
+
+==== Regex mode (`--regex`)
+
+Capture groups are referenced with `$1`, `$2` (positional) or `${name}` (named).
+The syntax is identical to JavaScript and Ruby regex replacement strings.
+
+[source,bash]
+----
+# Add a dash before the version number
+lyra rename --regex '^report_v([0-9]+)\.txt$' 'report-$1.txt'
+# report_v1.txt → report-1.txt
+
+# Use a named capture group
+lyra rename --regex '(?P<base>.+)\.jpeg$' '${base}.jpg'
+# photo.jpeg → photo.jpg
+
+# Preview first
+lyra rename --regex --dry-run '^(.+)_draft\.md$' '$1.md'
+----
+
+==== Other modes
+
+[source,bash]
+----
 # Sequential numbering: 001.jpg, 002.jpg …
 lyra rename --seq *.jpg
 
@@ -775,9 +815,6 @@ lyra rename --seq --start 10 --width 4 *.png
 
 # Lowercase all filenames
 lyra rename --case lower *.JPG
-
-# Preview without applying
-lyra rename --dry-run "*.jpeg" "*.jpg"
 ----
 
 ---
