@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/lyra-cli/lyra/internal/resume"
@@ -130,6 +131,14 @@ func runLocalCopy(src, dest string) error {
 		return fmt.Errorf("source does not exist: %w", err)
 	}
 
+	// If dest is an existing directory (or ends with /), place file inside it
+	destInfo, destErr := os.Stat(dest)
+	if destErr == nil && destInfo.IsDir() {
+		dest = dest + string(os.PathSeparator) + filepath.Base(src)
+	} else if strings.HasSuffix(dest, "/") || strings.HasSuffix(dest, string(os.PathSeparator)) {
+		dest = dest + filepath.Base(src)
+	}
+
 	pp := tui.NewProgressProgram("copying", nil)
 
 	var size int64
@@ -140,9 +149,11 @@ func runLocalCopy(src, dest string) error {
 
 	lt := transfer.NewLocalTransfer(opts, entry.Report, nil)
 
+	copyErrCh := make(chan error, 1)
 	go func() {
 		err := lt.Copy(src, dest)
 		entry.Finish(err)
+		copyErrCh <- err
 	}()
 
 	paused := pp.Run()
@@ -151,6 +162,10 @@ func runLocalCopy(src, dest string) error {
 		lt.Cancel()
 		fmt.Println(ui.RenderWarning("Transfer paused. Resume with: lyra cp --resume " + src + " " + dest))
 		return nil
+	}
+
+	if err := <-copyErrCh; err != nil {
+		return err
 	}
 
 	fmt.Println(ui.RenderSuccess("Copy complete!"))
