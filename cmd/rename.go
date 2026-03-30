@@ -338,9 +338,9 @@ func computeCaseRenames(patterns []string, caseType string) ([]renameOp, error) 
 		var newBase string
 		switch strings.ToLower(caseType) {
 		case "upper":
-			newBase = strings.ToUpper(nameNoExt) + ext
+			newBase = strings.ToUpper(nameNoExt) + strings.ToUpper(ext)
 		case "lower":
-			newBase = strings.ToLower(nameNoExt) + ext
+			newBase = strings.ToLower(nameNoExt) + strings.ToLower(ext)
 		case "title":
 			newBase = toTitleCase(nameNoExt) + ext
 		default:
