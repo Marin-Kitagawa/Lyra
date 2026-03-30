@@ -93,7 +93,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 	deletes := 0
 	for _, a := range actions {
 		switch a.op {
-		case "copy":
+		case "copy", "mkdir":
 			copies++
 			prefix := ui.StyleSuccess.Render("  + ")
 			if syncDryRun {
@@ -143,7 +143,7 @@ func computeSyncActions(src, dest string) ([]syncAction, error) {
 		if info.IsDir() {
 			destInfo, err := os.Stat(destPath)
 			if err != nil || !destInfo.IsDir() {
-				actions = append(actions, syncAction{op: "copy", src: path, dest: destPath})
+				actions = append(actions, syncAction{op: "mkdir", src: path, dest: destPath})
 			}
 			return nil
 		}
@@ -222,14 +222,25 @@ func mergeSyncActions(forward, reverse []syncAction) []syncAction {
 
 // executeSyncActions executes all sync actions with a BubbleTea progress display
 func executeSyncActions(actions []syncAction) error {
-	// Separate copy and delete actions
+	// Separate actions by type
+	var mkdirActions []syncAction
 	var copyActions []syncAction
 	var deleteActions []syncAction
 	for _, a := range actions {
-		if a.op == "copy" {
+		switch a.op {
+		case "mkdir":
+			mkdirActions = append(mkdirActions, a)
+		case "copy":
 			copyActions = append(copyActions, a)
-		} else {
+		default:
 			deleteActions = append(deleteActions, a)
+		}
+	}
+
+	// Create directories first
+	for _, a := range mkdirActions {
+		if err := os.MkdirAll(a.dest, 0755); err != nil {
+			return fmt.Errorf("failed to create directory %s: %w", a.dest, err)
 		}
 	}
 
