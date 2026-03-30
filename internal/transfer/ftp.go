@@ -30,10 +30,16 @@ func ParseFTPTarget(s string) (*FTPTarget, error) {
 		return nil, fmt.Errorf("invalid FTP URL: %w", err)
 	}
 
+	// Collapse consecutive slashes in path (e.g. //file.txt → /file.txt)
+	cleanPath := u.Path
+	for strings.Contains(cleanPath, "//") {
+		cleanPath = strings.ReplaceAll(cleanPath, "//", "/")
+	}
+
 	t := &FTPTarget{
 		Host: u.Hostname(),
 		Port: u.Port(),
-		Path: u.Path,
+		Path: cleanPath,
 	}
 
 	if t.Port == "" {
