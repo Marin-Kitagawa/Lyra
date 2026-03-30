@@ -14,7 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/dustin/go-humanize"
-	"github.com/lyra-cli/lyra/internal/ui"
+	"github.com/Marin-Kitagawa/Lyra/internal/ui"
 )
 
 // Entry tracks a single file transfer.

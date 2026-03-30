@@ -8,7 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/dustin/go-humanize"
-	"github.com/lyra-cli/lyra/internal/ui"
+	"github.com/Marin-Kitagawa/Lyra/internal/ui"
 )
 
 // SummaryRecord holds the result of a single file operation.

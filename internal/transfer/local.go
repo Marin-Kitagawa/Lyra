@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/lyra-cli/lyra/internal/resume"
+	"github.com/Marin-Kitagawa/Lyra/internal/resume"
 )
 
 const (

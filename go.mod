@@ -1,4 +1,4 @@
-module github.com/lyra-cli/lyra
+module github.com/Marin-Kitagawa/Lyra
 
 go 1.22
 

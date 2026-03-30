@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/lyra-cli/lyra/internal/transfer/cloud"
-	"github.com/lyra-cli/lyra/internal/ui"
+	"github.com/Marin-Kitagawa/Lyra/internal/transfer/cloud"
+	"github.com/Marin-Kitagawa/Lyra/internal/ui"
 	"github.com/spf13/cobra"
 )
 

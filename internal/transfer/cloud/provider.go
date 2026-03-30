@@ -1,7 +1,7 @@
 package cloud
 
 import (
-	"github.com/lyra-cli/lyra/internal/resume"
+	"github.com/Marin-Kitagawa/Lyra/internal/resume"
 )
 
 // FileInfo represents a file in a cloud provider

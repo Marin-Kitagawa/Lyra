@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lyra-cli/lyra/internal/tui"
-	"github.com/lyra-cli/lyra/internal/ui"
+	"github.com/Marin-Kitagawa/Lyra/internal/tui"
+	"github.com/Marin-Kitagawa/Lyra/internal/ui"
 	"github.com/spf13/cobra"
 )
 

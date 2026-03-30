@@ -16,7 +16,7 @@ import (
 	"github.com/mitchellh/go-homedir"
 	"golang.org/x/oauth2"
 
-	"github.com/lyra-cli/lyra/internal/resume"
+	"github.com/Marin-Kitagawa/Lyra/internal/resume"
 )
 
 const (

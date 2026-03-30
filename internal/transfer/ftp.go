@@ -11,7 +11,7 @@ import (
 
 	"github.com/jlaffaye/ftp"
 
-	"github.com/lyra-cli/lyra/internal/resume"
+	"github.com/Marin-Kitagawa/Lyra/internal/resume"
 )
 
 // FTPTarget represents a parsed FTP target

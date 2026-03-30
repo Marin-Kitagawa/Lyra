@@ -1,6 +1,6 @@
 package main
 
-import "github.com/lyra-cli/lyra/cmd"
+import "github.com/Marin-Kitagawa/Lyra/cmd"
 
 func main() {
 	cmd.Execute()

@@ -17,7 +17,7 @@ import (
 	"google.golang.org/api/drive/v3"
 	"google.golang.org/api/option"
 
-	"github.com/lyra-cli/lyra/internal/resume"
+	"github.com/Marin-Kitagawa/Lyra/internal/resume"
 )
 
 const (

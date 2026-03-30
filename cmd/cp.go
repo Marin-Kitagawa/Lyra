@@ -6,10 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/lyra-cli/lyra/internal/resume"
-	"github.com/lyra-cli/lyra/internal/transfer"
-	"github.com/lyra-cli/lyra/internal/tui"
-	"github.com/lyra-cli/lyra/internal/ui"
+	"github.com/Marin-Kitagawa/Lyra/internal/resume"
+	"github.com/Marin-Kitagawa/Lyra/internal/transfer"
+	"github.com/Marin-Kitagawa/Lyra/internal/tui"
+	"github.com/Marin-Kitagawa/Lyra/internal/ui"
 	"github.com/spf13/cobra"
 )
 
