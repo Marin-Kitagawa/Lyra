@@ -361,6 +361,14 @@ test_find() {
     assert_ok       "modified filter last 1 year"                      find "$d/src" --modified "last 1 year"
     assert_ok       "combined name+type filter"                        find "$d/src" --name "*.go" --type file
     assert_ok       "no results is not an error"                       find "$d/src" --name "*.xyz"
+
+    # --regex mode
+    assert_contains "regex: matches by pattern"           "main.go"   find "$d/src" --regex --name '\.go$'
+    assert_contains "regex: alternation matches both"     "main.go"   find "$d/src" --regex --name '\.(go|txt)$'
+    assert_contains "regex: alternation also finds txt"   "notes.txt" find "$d/src" --regex --name '\.(go|txt)$'
+    assert_not_contains "regex: does not match .log"      "app.log"   find "$d/src" --regex --name '\.(go|txt)$'
+    assert_ok       "regex: anchored pattern no results"              find "$d/src" --regex --name '^nomatch'
+    assert_fail     "regex: invalid pattern is an error"              find "$d/src" --regex --name '[invalid'
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -442,6 +450,29 @@ test_rename() {
     echo "x" > "$d/quiet.old"
     assert_ok  "uppercase case conversion"             rename --case upper "$d/quiet.old"
     assert_file "uppercased file exists"               "$d/QUIET.OLD"
+
+    # --regex mode
+    local r; r=$(mk_dir rename_regex)
+    echo "x" > "$r/report_v1.txt"
+    echo "x" > "$r/report_v2.txt"
+    echo "x" > "$r/other.txt"
+
+    run_in "regex: dry-run shows renames"      "$r"  rename --regex --dry-run '^report_v([0-9]+)\.txt$' 'report-$1.txt'
+    assert_file "regex: dry-run left originals"       "$r/report_v1.txt"
+
+    run_in "regex: renames matching files"     "$r"  rename --regex '^report_v([0-9]+)\.txt$' 'report-$1.txt'
+    assert_file    "regex: report-1.txt created"      "$r/report-1.txt"
+    assert_file    "regex: report-2.txt created"      "$r/report-2.txt"
+    assert_no_file "regex: original report_v1 gone"   "$r/report_v1.txt"
+    assert_file    "regex: non-matching file untouched" "$r/other.txt"
+
+    # Named capture groups
+    echo "x" > "$r/photo.jpeg"
+    run_in "regex: named group rename"         "$r"  rename --regex '(?P<base>.+)\.jpeg$' '${base}.jpg'
+    assert_file    "regex: photo.jpg created"         "$r/photo.jpg"
+    assert_no_file "regex: photo.jpeg removed"        "$r/photo.jpeg"
+
+    assert_fail "regex: invalid pattern is an error"  rename --regex '[bad' 'x'
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
