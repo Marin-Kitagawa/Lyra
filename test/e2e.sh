@@ -615,6 +615,7 @@ test_ftp() {
     read -rp  "  Remote upload path [/upload]:  " FTP_REMOTE_INPUT
     FTP_PORT="${FTP_PORT_INPUT:-21}"
     FTP_REMOTE="${FTP_REMOTE_INPUT:-/upload}"
+    FTP_REMOTE="${FTP_REMOTE%/}"   # strip trailing slash to avoid double-slash in URL
 
     local d; d=$(mk_dir ftp)
     local stamp; stamp=$(date +%s)
