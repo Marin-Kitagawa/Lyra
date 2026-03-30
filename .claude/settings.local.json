@@ -20,7 +20,10 @@
       "Bash(go get:*)",
       "Bash(grep -n '\"\"fmt\"\"' cmd/touch.go cmd/md.go)",
       "Bash(bash -n test/e2e.sh)",
-      "Bash(bash test/e2e.sh)"
+      "Bash(bash test/e2e.sh)",
+      "Bash(bin/lyra.exe touch:*)",
+      "Bash(bin/lyra.exe find:*)",
+      "Bash(bin/lyra.exe rename:*)"
     ]
   }
 }
