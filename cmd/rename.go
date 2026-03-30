@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -14,25 +15,35 @@ import (
 )
 
 var (
-	renameDryRun bool
-	renameSeq    bool
-	renameCase   string
-	renameStart  int
-	renameWidth  int
+	renameDryRun  bool
+	renameSeq     bool
+	renameCase    string
+	renameStart   int
+	renameWidth   int
+	renameRegex   bool
 )
 
 var renameCmd = &cobra.Command{
 	Use:   "rename <pattern> <replacement>",
 	Short: "Batch rename files with pattern matching",
-	Long: `Batch rename files using glob patterns or case conversions.
+	Long: `Batch rename files using glob patterns, regular expressions, or case conversions.
 
-Examples:
-  lyra rename "*.txt" "*.bak"           # Rename all .txt to .bak
-  lyra rename "*.txt" "*.bak" --dry-run # Preview renames
+Glob mode (default):
+  lyra rename "*.txt" "*.bak"
+  lyra rename "report_*" "backup_*"
+
+Regex mode (--regex):
+  Capture groups are referenced with $1, $2, ${name} in the replacement.
+  lyra rename --regex "^(.+)_v(\d+)\.txt$" "$1-$2.txt"
+  lyra rename --regex "(?P<base>.+)\.jpeg$" "${base}.jpg"
+
+Other modes:
   lyra rename --seq *.jpg               # Sequential: 001.jpg, 002.jpg, ...
   lyra rename --case upper *.txt        # UPPERCASE filenames
   lyra rename --case lower *.TXT        # lowercase filenames
-  lyra rename --case title *.txt        # Title Case filenames`,
+  lyra rename --case title *.txt        # Title Case filenames
+
+Add --dry-run to any mode to preview without making changes.`,
 	Args: func(cmd *cobra.Command, args []string) error {
 		if renameSeq || renameCase != "" {
 			if len(args) < 1 {
@@ -54,6 +65,7 @@ func init() {
 	renameCmd.Flags().StringVar(&renameCase, "case", "", "Case conversion: upper, lower, title")
 	renameCmd.Flags().IntVar(&renameStart, "start", 1, "Starting number for sequential rename")
 	renameCmd.Flags().IntVar(&renameWidth, "width", 3, "Zero-padding width for sequential rename")
+	renameCmd.Flags().BoolVarP(&renameRegex, "regex", "e", false, "Treat pattern as a regular expression; use $1/$2 or ${name} in replacement")
 }
 
 // renameOp represents a rename operation
@@ -70,6 +82,8 @@ func runRename(cmd *cobra.Command, args []string) error {
 		ops, err = computeSeqRenames(args)
 	} else if renameCase != "" {
 		ops, err = computeCaseRenames(args, renameCase)
+	} else if renameRegex {
+		ops, err = computeRegexRenames(args[0], args[1])
 	} else {
 		ops, err = computePatternRenames(args[0], args[1])
 	}
@@ -215,6 +229,42 @@ func applyPatternRename(name, pattern, replacement string) string {
 	}
 
 	return name
+}
+
+// computeRegexRenames renames files whose names match the regular expression.
+// The replacement string may reference capture groups with $1, $2, or ${name}.
+// Operates on files in the current working directory.
+func computeRegexRenames(pattern, replacement string) ([]renameOp, error) {
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("invalid regex: %w", err)
+	}
+
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		return nil, fmt.Errorf("could not read directory: %w", err)
+	}
+
+	var ops []renameOp
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !re.MatchString(name) {
+			continue
+		}
+		newName := re.ReplaceAllString(name, replacement)
+		if newName == name {
+			continue
+		}
+		newPath := filepath.Join(".", newName)
+		if _, err := os.Stat(newPath); err == nil {
+			return nil, fmt.Errorf("destination already exists: %s", newName)
+		}
+		ops = append(ops, renameOp{oldPath: name, newPath: newPath})
+	}
+	return ops, nil
 }
 
 // computeSeqRenames computes sequential numbering renames

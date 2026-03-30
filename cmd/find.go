@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -19,6 +20,7 @@ var (
 	findModified string
 	findType     string
 	findMaxDepth int
+	findRegex    bool
 )
 
 var findCmd = &cobra.Command{
@@ -27,22 +29,25 @@ var findCmd = &cobra.Command{
 	Long: `Find files and directories with flexible filtering.
 
 Examples:
-  lyra find . -name "*.go"
-  lyra find . -size +1GB
-  lyra find . -size -100KB
-  lyra find . -modified "last 7 days"
-  lyra find . -type dir
-  lyra find . -type file -name "*.log"`,
+  lyra find . --name "*.go"
+  lyra find . --name "^main\.(go|js)$" --regex
+  lyra find . --size +1GB
+  lyra find . --size -100KB
+  lyra find . --modified "last 7 days"
+  lyra find . --type dir
+  lyra find . --type file --name "*.log"
+  lyra find . --regex --name "test_\d+"`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runFind,
 }
 
 func init() {
-	findCmd.Flags().StringVarP(&findName, "name", "n", "", "Name pattern (glob, e.g. '*.go')")
+	findCmd.Flags().StringVarP(&findName, "name", "n", "", "Name pattern (glob by default; regex with --regex)")
 	findCmd.Flags().StringVarP(&findSize, "size", "s", "", "Size filter (+1GB, -100KB, 50MB)")
 	findCmd.Flags().StringVarP(&findModified, "modified", "m", "", "Modified time filter (e.g. 'last 7 days')")
 	findCmd.Flags().StringVarP(&findType, "type", "t", "", "Type filter: file, dir, symlink")
 	findCmd.Flags().IntVar(&findMaxDepth, "max-depth", -1, "Maximum depth (-1 for unlimited)")
+	findCmd.Flags().BoolVarP(&findRegex, "regex", "e", false, "Treat --name as a regular expression")
 }
 
 // sizeFilter represents a parsed size filter
@@ -172,17 +177,25 @@ func runFind(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Run the filesystem walk inside a spinner so the user sees activity
-	// on large trees. The spinner disappears once results are ready.
+	// Compile regex up front so a bad pattern is rejected before the spinner.
+	var nameRe *regexp.Regexp
+	if findName != "" && findRegex {
+		nameRe, err = regexp.Compile(findName)
+		if err != nil {
+			return fmt.Errorf("invalid --name regex: %w", err)
+		}
+	}
+
 	label := fmt.Sprintf("Searching in %s…", ui.StylePrimary.Render(searchPath))
 	tui.RunWithSpinner(label, func() string {
-		return doFind(searchPath, sizef, modifiedAfter)
+		return doFind(searchPath, sizef, modifiedAfter, nameRe)
 	})
 	return nil
 }
 
 // doFind performs the actual walk and returns a fully-rendered result string.
-func doFind(searchPath string, sizef *sizeFilter, modifiedAfter time.Time) string {
+// nameRe is non-nil only when --regex is set; otherwise glob matching is used.
+func doFind(searchPath string, sizef *sizeFilter, modifiedAfter time.Time, nameRe *regexp.Regexp) string {
 	baseDepth := strings.Count(filepath.Clean(searchPath), string(os.PathSeparator))
 	var lines []string
 
@@ -219,8 +232,18 @@ func doFind(searchPath string, sizef *sizeFilter, modifiedAfter time.Time) strin
 		}
 
 		if findName != "" {
-			matched, merr := filepath.Match(findName, filepath.Base(path))
-			if merr != nil || !matched {
+			base := filepath.Base(path)
+			var matched bool
+			if nameRe != nil {
+				matched = nameRe.MatchString(base)
+			} else {
+				var merr error
+				matched, merr = filepath.Match(findName, base)
+				if merr != nil {
+					return nil
+				}
+			}
+			if !matched {
 				return nil
 			}
 		}
