@@ -344,10 +344,20 @@ func (pp *ProgressProgram) Add(name string, total int64) *Entry {
 	return e
 }
 
-// Run starts the BubbleTea loop and blocks until all entries are done or paused.
-// Returns true if the transfer was paused (Ctrl+C).
+// Run starts the BubbleTea progress loop and blocks until all entries finish or
+// the user pauses with Ctrl+C. Returns true if the transfer was paused.
+//
+// When stdout is not a TTY (pipe, redirect, test capture) the BubbleTea renderer
+// is skipped entirely — transfers still complete, but no progress UI is shown.
 func (pp *ProgressProgram) Run() (paused bool) {
 	if len(pp.entries) == 0 {
+		return false
+	}
+	if !isTTY() {
+		// Drain all entries without any UI — wait for each DoneCh.
+		for _, e := range pp.entries {
+			<-e.DoneCh
+		}
 		return false
 	}
 	m := newProgressModel(pp.entries, pp.op, pp.pauseFn, pp.sigCh)

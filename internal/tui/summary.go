@@ -21,9 +21,20 @@ type SummaryRecord struct {
 }
 
 // ShowSummary renders a summary table to stdout using bubbles/table.
-// Does nothing if records is empty or has only 1 entry.
+// Does nothing if records has fewer than 2 entries.
+// Falls back to plain-text lines when stdout is not a TTY.
 func ShowSummary(records []SummaryRecord) {
 	if len(records) < 2 {
+		return
+	}
+	if !isTTY() {
+		for _, r := range records {
+			status := "OK"
+			if r.Err != nil {
+				status = "FAIL: " + r.Err.Error()
+			}
+			fmt.Printf("  %-30s  %-8s  %s\n", r.Name, r.Op, status)
+		}
 		return
 	}
 

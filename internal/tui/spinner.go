@@ -1,17 +1,16 @@
 package tui
 
 import (
+	"fmt"
+
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/lyra-cli/lyra/internal/ui"
 )
 
-// workDoneMsg carries the completed output from a background work function.
 type workDoneMsg struct{ output string }
 
-// spinnerModel shows a spinner while a work function runs in the background,
-// then renders the result and exits.
 type spinnerModel struct {
 	spinner spinner.Model
 	label   string
@@ -30,9 +29,7 @@ func newSpinnerModel(label string, work func() string) spinnerModel {
 func (m spinnerModel) Init() tea.Cmd {
 	return tea.Batch(
 		m.spinner.Tick,
-		func() tea.Msg {
-			return workDoneMsg{output: m.work()}
-		},
+		func() tea.Msg { return workDoneMsg{output: m.work()} },
 	)
 }
 
@@ -57,9 +54,16 @@ func (m spinnerModel) View() string {
 	return "\n  " + m.spinner.View() + " " + ui.StyleMuted.Render(m.label) + "\n"
 }
 
-// RunWithSpinner displays an animated spinner with label while work() runs.
-// When work() returns its output string, it is rendered and the program exits.
+// RunWithSpinner shows an animated spinner while work() executes in the background.
+// When work() returns its output string, that string is rendered and the program exits.
+//
+// Falls back to running work() directly (no spinner) when stdout is not a TTY,
+// ensuring the function never blocks in pipes, CI, or test-script capture.
 func RunWithSpinner(label string, work func() string) {
+	if !isTTY() {
+		fmt.Print(work())
+		return
+	}
 	p := tea.NewProgram(newSpinnerModel(label, work))
 	p.Run() //nolint:errcheck
 }
