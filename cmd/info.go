@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/dustin/go-humanize"
+	"github.com/lyra-cli/lyra/internal/tui"
 	"github.com/lyra-cli/lyra/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -36,47 +37,50 @@ func runInfo(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("cannot access %s: %w", path, err)
 	}
 
-	// Header
-	icon := fileIcon(info)
-	fmt.Printf("\n%s\n\n", ui.RenderHeader(fmt.Sprintf("%s  %s", icon, info.Name())))
+	// Checksum computation can be slow for large files — run inside a spinner.
+	label := fmt.Sprintf("Analysing %s…", ui.StylePrimary.Render(info.Name()))
+	tui.RunWithSpinner(label, func() string {
+		return buildInfoOutput(path, info)
+	})
+	return nil
+}
 
-	// Basic info
-	lines := []string{}
-	lines = append(lines, ui.RenderKeyValue("Path", path))
-	lines = append(lines, ui.RenderKeyValue("Type", fileType(info)))
-	lines = append(lines, ui.RenderKeyValue("Size", fmt.Sprintf("%s (%d bytes)", humanize.Bytes(uint64(info.Size())), info.Size())))
-	lines = append(lines, ui.RenderKeyValue("Mode", info.Mode().String()))
-	lines = append(lines, ui.RenderKeyValue("Modified", info.ModTime().Format("2006-01-02 15:04:05")))
+// buildInfoOutput gathers all file metadata and returns the fully-rendered string.
+func buildInfoOutput(path string, info os.FileInfo) string {
+	var sb strings.Builder
+	icon := fileIcon(info)
+	sb.WriteString("\n")
+	sb.WriteString(ui.RenderHeader(fmt.Sprintf("%s  %s", icon, info.Name())) + "\n\n")
+
+	lines := []string{
+		ui.RenderKeyValue("Path", path),
+		ui.RenderKeyValue("Type", fileType(info)),
+		ui.RenderKeyValue("Size", fmt.Sprintf("%s (%d bytes)", humanize.Bytes(uint64(info.Size())), info.Size())),
+		ui.RenderKeyValue("Mode", info.Mode().String()),
+		ui.RenderKeyValue("Modified", info.ModTime().Format("2006-01-02 15:04:05")),
+	}
 
 	if !info.IsDir() {
-		// MIME type
 		mimeType, err := detectMIME(path)
 		if err == nil {
 			lines = append(lines, ui.RenderKeyValue("MIME Type", mimeType))
 		}
-
-		// Checksums
-		fmt.Printf("%s\n\n", ui.RenderInfoBox(strings.Join(lines, "\n")))
-		fmt.Printf("%s\n\n", ui.StylePrimary.Bold(true).Render("Checksums:"))
-
+		sb.WriteString(ui.RenderInfoBox(strings.Join(lines, "\n")) + "\n\n")
+		sb.WriteString(ui.StylePrimary.Bold(true).Render("Checksums:") + "\n\n")
 		hashLines := computeHashes(path)
-		fmt.Printf("%s\n\n", ui.RenderInfoBox(strings.Join(hashLines, "\n")))
-
-		// Image dimensions if applicable
+		sb.WriteString(ui.RenderInfoBox(strings.Join(hashLines, "\n")) + "\n\n")
 		if dims, err := getImageDimensions(path, mimeType); err == nil && dims != "" {
-			fmt.Printf("%s\n", ui.RenderKeyValue("Dimensions", dims))
+			sb.WriteString(ui.RenderKeyValue("Dimensions", dims) + "\n")
 		}
 	} else {
-		// Directory info
 		count, size, err := dirStats(path)
 		if err == nil {
 			lines = append(lines, ui.RenderKeyValue("Contents", fmt.Sprintf("%d items", count)))
 			lines = append(lines, ui.RenderKeyValue("Total Size", humanize.Bytes(uint64(size))))
 		}
-		fmt.Printf("%s\n\n", ui.RenderInfoBox(strings.Join(lines, "\n")))
+		sb.WriteString(ui.RenderInfoBox(strings.Join(lines, "\n")) + "\n\n")
 	}
-
-	return nil
+	return sb.String()
 }
 
 func fileType(info os.FileInfo) string {

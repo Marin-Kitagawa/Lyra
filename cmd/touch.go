@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/lyra-cli/lyra/internal/tui"
 	"github.com/lyra-cli/lyra/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -83,7 +84,7 @@ func touchFile(path string, t time.Time) error {
 		}
 		f.Close()
 
-		fmt.Println(ui.RenderSuccess(fmt.Sprintf("Created %s", ui.StylePrimary.Render(path))))
+		tui.Print(ui.RenderSuccess(fmt.Sprintf("Created %s", ui.StylePrimary.Render(path))))
 
 		// Set timestamp
 		return os.Chtimes(path, t, t)
@@ -108,6 +109,6 @@ func touchFile(path string, t time.Time) error {
 		return fmt.Errorf("could not update timestamp for %s: %w", path, err)
 	}
 
-	fmt.Println(ui.RenderSuccess(fmt.Sprintf("Touched %s", ui.StylePrimary.Render(path))))
+	tui.Print(ui.RenderSuccess(fmt.Sprintf("Touched %s", ui.StylePrimary.Render(path))))
 	return nil
 }

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/lyra-cli/lyra/internal/tui"
 	"github.com/lyra-cli/lyra/internal/ui"
 	"github.com/mitchellh/go-homedir"
 	"github.com/spf13/cobra"
@@ -48,7 +49,7 @@ func runMd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("could not create directory: %w", err)
 	}
 
-	fmt.Println(ui.RenderSuccess(fmt.Sprintf("Created %s", ui.StylePrimary.Render(absPath))))
+	tui.Print(ui.RenderSuccess(fmt.Sprintf("Created %s", ui.StylePrimary.Render(absPath))))
 
 	if mdCd {
 		if err := writeCdTo(absPath); err != nil {

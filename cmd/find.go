@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/dustin/go-humanize"
+	"github.com/lyra-cli/lyra/internal/tui"
 	"github.com/lyra-cli/lyra/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -171,18 +172,28 @@ func runFind(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	baseDepth := strings.Count(filepath.Clean(searchPath), string(os.PathSeparator))
-	found := 0
+	// Run the filesystem walk inside a spinner so the user sees activity
+	// on large trees. The spinner disappears once results are ready.
+	label := fmt.Sprintf("Searching in %s…", ui.StylePrimary.Render(searchPath))
+	tui.RunWithSpinner(label, func() string {
+		return doFind(searchPath, sizef, modifiedAfter)
+	})
+	return nil
+}
 
-	err = filepath.Walk(searchPath, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil // Skip errors
+// doFind performs the actual walk and returns a fully-rendered result string.
+func doFind(searchPath string, sizef *sizeFilter, modifiedAfter time.Time) string {
+	baseDepth := strings.Count(filepath.Clean(searchPath), string(os.PathSeparator))
+	var lines []string
+
+	filepath.Walk(searchPath, func(path string, info os.FileInfo, err error) error { //nolint:errcheck
+		if err != nil || path == searchPath {
+			return nil
 		}
 
-		// Depth check
 		if findMaxDepth >= 0 {
-			currentDepth := strings.Count(filepath.Clean(path), string(os.PathSeparator)) - baseDepth
-			if currentDepth > findMaxDepth {
+			depth := strings.Count(filepath.Clean(path), string(os.PathSeparator)) - baseDepth
+			if depth > findMaxDepth {
 				if info.IsDir() {
 					return filepath.SkipDir
 				}
@@ -190,12 +201,6 @@ func runFind(cmd *cobra.Command, args []string) error {
 			}
 		}
 
-		// Skip root
-		if path == searchPath {
-			return nil
-		}
-
-		// Type filter
 		if findType != "" {
 			switch findType {
 			case "file":
@@ -213,50 +218,42 @@ func runFind(cmd *cobra.Command, args []string) error {
 			}
 		}
 
-		// Name pattern filter
 		if findName != "" {
-			matched, err := filepath.Match(findName, filepath.Base(path))
-			if err != nil || !matched {
+			matched, merr := filepath.Match(findName, filepath.Base(path))
+			if merr != nil || !matched {
 				return nil
 			}
 		}
 
-		// Size filter
-		if sizef != nil {
-			if info.IsDir() || !sizef.matches(info.Size()) {
-				return nil
-			}
+		if sizef != nil && (info.IsDir() || !sizef.matches(info.Size())) {
+			return nil
 		}
 
-		// Modified time filter
-		if !modifiedAfter.IsZero() {
-			if info.ModTime().Before(modifiedAfter) {
-				return nil
-			}
+		if !modifiedAfter.IsZero() && info.ModTime().Before(modifiedAfter) {
+			return nil
 		}
 
-		// Print result
-		printFindResult(path, info)
-		found++
+		lines = append(lines, buildFindResult(path, info))
 		return nil
 	})
 
-	if err != nil {
-		return err
+	var sb strings.Builder
+	sb.WriteString("\n")
+	for _, l := range lines {
+		sb.WriteString(l + "\n")
 	}
-
-	fmt.Printf("\n%s\n", ui.StyleMuted.Render(fmt.Sprintf("Found %d item(s)", found)))
-	return nil
+	sb.WriteString("\n")
+	sb.WriteString(ui.StyleMuted.Render(fmt.Sprintf("  Found %d item(s)", len(lines))))
+	sb.WriteString("\n")
+	return sb.String()
 }
 
-func printFindResult(path string, info os.FileInfo) {
+func buildFindResult(path string, info os.FileInfo) string {
 	icon := fileIcon(info)
 	style := fileStyle(info)
-
-	var extra string
+	extra := ""
 	if !info.IsDir() {
 		extra = ui.StyleMuted.Render(fmt.Sprintf(" (%s)", humanize.Bytes(uint64(info.Size()))))
 	}
-
-	fmt.Printf("%s %s%s\n", icon, style.Render(path), extra)
+	return fmt.Sprintf("  %s %s%s", icon, style.Render(path), extra)
 }
