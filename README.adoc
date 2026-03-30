@@ -25,23 +25,47 @@ cloud storage, SSH/FTP transfers, resumable copies, and a gorgeous pink/purple p
 
 .Prerequisites
 * Go {go-version}
+* GNU Make (optional but recommended)
 
 [source,bash]
 ----
 git clone https://github.com/lyra-cli/lyra
 cd lyra
-go build -ldflags="-s -w" -o lyra .
+make build
 ----
+
+The binary is placed in `bin/lyra` (or `bin/lyra.exe` on Windows).
+Without Make, build directly with:
+
+[source,bash]
+----
+go build -ldflags="-s -w" -o bin/lyra .
+----
+
+.Makefile targets
+[cols="1,2", options="header"]
+|===
+| Target | Description
+
+| `make build`
+| Compile to `bin/lyra[.exe]`
+
+| `make clean`
+| Remove the `bin/` directory
+
+| `make run ARGS="..."`
+| Build and run with the given arguments
+|===
 
 Move the binary somewhere on your `$PATH`:
 
 [source,bash]
 ----
 # Linux / macOS
-mv lyra /usr/local/bin/
+mv bin/lyra /usr/local/bin/
 
 # Windows — copy to a directory in %PATH%
-copy lyra.exe C:\Windows\System32\
+copy bin\lyra.exe C:\Windows\System32\
 ----
 
 === Shell Integration (recommended)
@@ -496,17 +520,20 @@ Multiple filters are combined with AND logic.
 |===
 | Flag | Description
 
-| `--name <pattern>`
+| `-n`, `--name <pattern>`
 | Glob pattern to match the filename (e.g., `*.log`, `report_*`)
 
-| `--size <expr>`
+| `-s`, `--size <expr>`
 | Size filter: `+1GB` (larger than), `-500KB` (smaller than), `100MB` (exactly)
 
-| `--modified <expr>`
+| `-m`, `--modified <expr>`
 | Modification time: `last 7 days`, `before 2024-01-01`, `after 2023-06-01`
 
-| `--type f\|d`
-| Limit to files (`f`) or directories (`d`)
+| `-t`, `--type <type>`
+| Limit to `file`, `dir`, or `symlink`
+
+| `--max-depth <n>`
+| Maximum directory depth to descend (`-1` for unlimited)
 |===
 
 ==== Examples
@@ -523,7 +550,10 @@ lyra find /home --size +1GB
 lyra find /var/log --name "*.log" --modified "last 7 days"
 
 # Find only directories whose name starts with "test"
-lyra find . --name "test*" --type d
+lyra find . --name "test*" --type dir
+
+# Search only the top level of a directory
+lyra find . --max-depth 1
 ----
 
 ---
@@ -593,13 +623,21 @@ timestamp of existing files — identical to the classic Unix `touch`.
 |===
 | Flag | Default | Description
 
-| `-t <time>`
+| `-t`, `--time <time>`
 | now
-| Set a specific timestamp in format `YYYYMMDDhhmm`
+| Set a specific timestamp (format: `2006-01-02 15:04:05`)
 
-| `-r <ref-file>`
-| —
-| Use the timestamp of another file
+| `--no-create`
+| false
+| Update timestamp only; do not create the file if it does not exist
+
+| `--access`
+| false
+| Update access time only
+
+| `--modify`
+| false
+| Update modification time only
 |===
 
 ==== Examples
@@ -610,10 +648,10 @@ timestamp of existing files — identical to the classic Unix `touch`.
 lyra touch index.html style.css app.js
 
 # Update timestamp to a specific time
-lyra touch -t 202401151200 snapshot.txt
+lyra touch --time "2024-01-15 12:00:00" snapshot.txt
 
-# Copy timestamp from another file
-lyra touch -r reference.txt target.txt
+# Update timestamp only if file exists (no-op if missing)
+lyra touch --no-create optional.txt
 ----
 
 ---
@@ -713,7 +751,7 @@ or case conversion.
 | 1
 | Starting index for `--seq`
 
-| `--pad`
+| `--width`
 | 3
 | Zero-padding width for `--seq` (e.g., `3` → `001`)
 |===
@@ -728,11 +766,11 @@ lyra rename "*.txt" "*.bak"
 # Rename with prefix
 lyra rename "photo_*.jpg" "holiday_*.jpg"
 
-# Sequential numbering: img_001.jpg, img_002.jpg …
+# Sequential numbering: 001.jpg, 002.jpg …
 lyra rename --seq *.jpg
 
 # Sequential with custom start and wider padding
-lyra rename --seq --start 10 --pad 4 *.png
+lyra rename --seq --start 10 --width 4 *.png
 # → 0010.png, 0011.png …
 
 # Lowercase all filenames
@@ -901,20 +939,50 @@ lyra stores all persistent state under `~/.lyra/`:
 
 ---
 
-== Progress Bar
+== Progress UI
 
-lyra uses a rich terminal progress bar for all transfer operations.
+lyra renders all transfer progress through https://github.com/charmbracelet/bubbletea[BubbleTea],
+with a pink-to-purple gradient progress bar per file.
 
 [source]
 ----
+  ✨ lyra — copying
+
   backup.tar.gz
-  ███████████████████▓▒░░░░░░░░░░░░░░░░░░  48% │ 4.8 GB / 10 GB │ 312 MB/s │ ETA 17s
+  ████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+  4.8 GB / 10 GB  312 MB/s  ETA 17s  48.0%
 ----
 
-* The bar fills with Unicode block characters: `█ ▓ ▒ ░`
-* Speed and ETA are updated every 250 ms.
-* On kbd:[Ctrl+C], the bar freezes in place and the transfer state is saved.
-* Multiple bars are shown in parallel for recursive / sync operations.
+* Speed and ETA are updated every 100 ms using an exponential moving average.
+* On kbd:[Ctrl+C], the display quits and the transfer state is saved for later resumption.
+* Multiple bars are shown stacked for recursive / sync operations.
+* When stdout is not a TTY (pipe, redirect, CI), the BubbleTea renderer is
+  skipped and transfers complete silently.
+
+=== Summary Table
+
+After any batch operation (multiple files copied, deleted, renamed, or synced),
+lyra prints a summary table:
+
+[source]
+----
+  Summary  3 operations · 3 succeeded · 0 failed
+
+╭────────────────────────────────────────────────────────────────╮
+│  File                          Op        Status    Size    Dur  │
+│  alpha.txt                     Copy      ✓ OK      6 B     1ms  │
+│  beta.txt                      Copy      ✓ OK      5 B     0ms  │
+│  sub/gamma.txt                 Copy      ✓ OK      6 B     0ms  │
+╰────────────────────────────────────────────────────────────────╯
+----
+
+Suppress the table with the global `--no-summary` flag:
+
+[source,bash]
+----
+lyra cp -r src/ dst/ --no-summary
+lyra rm --permanent a.txt b.txt --no-summary
+----
 
 ---
 
