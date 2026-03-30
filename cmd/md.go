@@ -39,6 +39,9 @@ func init() {
 
 func runMd(cmd *cobra.Command, args []string) error {
 	path := args[0]
+	if path == "" {
+		return fmt.Errorf("path must not be empty")
+	}
 
 	absPath, err := filepath.Abs(path)
 	if err != nil {
